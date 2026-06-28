@@ -1,0 +1,115 @@
+/* Admin Config Page Styles */
+:root {
+  --color-primary: #0066cc;
+  --color-primary-hover: #0052a3;
+  --color-primary-active: #004590;
+  --color-warning: #f59e0b;
+  --color-warning-hover: #d97706;
+  --color-warning-active: #b45309;
+  --focus-ring-color: #3b82f6;
+}
+
+/* Common button styles */
+.admin-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 12px 24px;
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  position: relative;
+  line-height: 1.2;
+}
+
+.admin-btn:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: 4px;
+}
+
+.admin-btn[disabled] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.admin-btn svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+/* Primary button */
+.admin-btn-primary {
+  background-color: var(--color-primary);
+  color: white;
+  border: none;
+}
+
+.admin-btn-primary:hover {
+  background-color: var(--color-primary-hover);
+}
+
+.admin-btn-primary:active {
+  background-color: var(--color-primary-active);
+}
+
+/* Warning button */
+.admin-btn-warning {
+  background-color: var(--color-warning);
+  color: white;
+  border: none;
+}
+
+.admin-btn-warning:hover {
+  background-color: var(--color-warning-hover);
+}
+
+.admin-btn-warning:active {
+  background-color: var(--color-warning-active);
+}
+
+/* Loading state styles */
+.admin-btn[aria-busy="true"] {
+  position: relative;
+  padding-right: 48px;
+}
+
+.admin-btn[aria-busy="true"]::after {
+  content: '';
+  position: absolute;
+  right: 16px;
+  width: 20px;
+  height: 20px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: button-spinner 0.75s linear infinite;
+}
+
+@keyframes button-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Button container */
+.admin-btn-group {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+/* Responsive styles */
+@media (max-width: 768px) {
+  .admin-btn-group {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .admin-btn-group .admin-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

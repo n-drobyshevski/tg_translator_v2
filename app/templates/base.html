@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="description" content="Admin dashboard for message management" />
+    <title>{% block title %}{% endblock %}</title>
+    
+    <!-- Base styles -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/modal.css') }}" />
+    
+    <style>
+      /* Base styles for better mobile experience */
+      html {
+        font-size: 16px;
+        scroll-behavior: smooth;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      
+      /* Improve scrolling on mobile */
+      .scroll-container {
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(156, 163, 175, 0.5) transparent;
+      }
+      
+      /* Better touch targets on mobile */
+      @media (max-width: 768px) {
+        button, 
+        [role="button"],
+        a {
+          min-height: 44px;
+          min-width: 44px;
+        }
+        
+        .mobile-nav-active {
+          overflow: hidden;
+        }
+      }
+      
+      /* Focus styles for better accessibility */
+      :focus-visible {
+        outline: 2px solid #2563eb;
+        outline-offset: 2px;
+      }
+      
+      /* Hide scrollbar for Chrome/Safari/Opera */
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      
+      /* Hide scrollbar for IE, Edge and Firefox */
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+    </style>
+    
+    <!-- AlpineJS initialization -->
+    <script>
+      document.addEventListener("alpine:init", () => {
+        Alpine.store("tooltips", {
+          canShow: false,
+        });
+        
+        Alpine.store("mobileNav", {
+          isOpen: false,
+          toggle() {
+            this.isOpen = !this.isOpen;
+            document.body.classList.toggle('mobile-nav-active', this.isOpen);
+          },
+          close() {
+            this.isOpen = false;
+            document.body.classList.remove('mobile-nav-active');
+          }
+        });
+      });
+    </script>
+    <script
+      defer
+      src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"
+    ></script>
+    {% block head %}{% endblock %}
+  </head>  <body
+    class="bg-gray-50 text-gray-900 antialiased h-full"
+    x-data="{ 
+      sidebarCollapsed: {{ 'false' if active_page == 'config' else 'true' }},
+      isMobileView: window.innerWidth < 768,
+      toggleSidebar() {
+        if (this.isMobileView) {
+          Alpine.store('mobileNav').toggle();
+        } else {
+          Alpine.store('tooltips').canShow = false;
+          this.sidebarCollapsed = !this.sidebarCollapsed;
+          
+          if (this.sidebarCollapsed) {
+            setTimeout(() => {
+              Alpine.store('tooltips').canShow = true;
+            }, 600);
+          }
+        }
+      }
+    }"
+    x-init="
+      $watch('sidebarCollapsed', value => {
+        if (!value) {
+          Alpine.store('tooltips').canShow = false;
+        }
+      });
+      
+      window.addEventListener('resize', () => {
+        isMobileView = window.innerWidth < 768;
+        if (!isMobileView) {
+          Alpine.store('mobileNav').close();
+        }
+      });
+      
+      Alpine.store('tooltips').canShow = false;
+    "
+    @keydown.escape="Alpine.store('mobileNav').close()"
+  >
+    <!-- Skip Navigation Link -->
+    <a href="#main-content" 
+       class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-white focus:text-blue-600 focus:shadow-lg focus:rounded-lg">
+      Skip to main content
+    </a>
+  
+    <!-- Sidebar -->
+    {% from 'components/sidebar.html' import sidebar %}
+    <div x-show="Alpine.store('mobileNav').isOpen" 
+         class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-40 md:hidden"
+         x-transition:enter="transition-opacity ease-in-out duration-300"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition-opacity ease-in-out duration-300"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0"
+         @click="Alpine.store('mobileNav').close()"
+         role="dialog"
+         aria-modal="true">
+    </div>
+    
+    {{ sidebar(active_item=active_page) }}
+
+    <!-- Main Content -->
+    <main
+      id="main-content"
+      x-bind:class="{ 
+        'md:pl-64': !sidebarCollapsed, 
+        'md:pl-16': sidebarCollapsed
+      }"
+      class="transition-all duration-500 ease-in-out min-h-full flex flex-col relative"
+    >
+      <div class="h-full flex flex-col bg-white">
+        <!-- Header -->
+        <header class="sticky top-0 z-30 bg-white/80 backdrop-blur-sm border-b border-gray-200">
+          <div class="px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center gap-4 h-16">
+              <!-- Mobile Menu Button -->
+              <div class="flex items-center md:hidden">
+                <button
+                  @click="toggleSidebar()"
+                  class="group p-2 text-gray-500 hover:bg-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  aria-label="Toggle navigation menu"
+                >
+                  <svg 
+                    xmlns="http://www.w3.org/2000/svg" 
+                    class="h-6 w-6 transition-transform duration-200" 
+                    :class="{ 'rotate-90': Alpine.store('mobileNav').isOpen }"
+                    fill="none" 
+                    viewBox="0 0 24 24" 
+                    stroke="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                </button>
+              </div>
+              
+              <!-- Header Content -->
+              {% block header %}{% endblock %}
+            </div>
+          </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <div class="flex-1 min-h-0">
+          <div class="scroll-container h-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
+            {% block content %}{% endblock %}
+          </div>
+        </div>
+      </div>
+    </main>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

@@ -1,0 +1,2025 @@
+{% extends 'base.html' %}
+{% from 'components/modal.html' import modal %}
+
+{% block title %}Admin Events{% endblock %}
+
+{% block head %}
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
+          crossorigin="anonymous"
+          referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/column_chooser.css') }}">
+    <style>
+      html, body { font-family: "Roboto", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+                    "Segoe UI", Arial, sans-serif; }
+
+      .enterprise-table thead th {
+        background: #f6f7fa;
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        font-weight: 500;
+        color: #22304a;
+        border-bottom: 2px solid #e3e8ee;
+        border-right: 1px solid #e3e8ee;
+        user-select: none;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      
+      /* Column-specific styles */
+      .col-timestamp {
+        max-width: 120px !important;
+        min-width: 100px !important;
+      }
+      
+      .col-event {
+        max-width: 120px !important;
+      }
+
+      .col-source_channel, .col-dest_channel {
+        max-width: 100px !important;
+        min-width: 80px !important;
+      }
+      
+      .col-source_channel_name, .col-dest_channel_name {
+        max-width: 180px !important;
+        min-width: 150px !important;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .col-message_id {
+        max-width: 80px !important;
+        min-width: 60px !important;
+        text-align: right;
+      }
+
+      .col-retry_count {
+        max-width: 60px !important;
+        min-width: 40px !important;
+        text-align: right;
+      }
+
+      .col-posting_success {
+        max-width: 70px !important;
+        min-width: 70px !important;
+        text-align: center;
+      }      .col-source_content {
+        min-width: 180px !important;
+        max-width: 350px !important;
+        background-color: #f9fcff; /* Very light blue background */
+        font-family: 'Roboto Mono', monospace;
+        font-size: 13px;
+        color: #444;
+      }
+      
+      .col-preview {
+        min-width: 200px !important;
+        max-width: 400px !important;
+      }
+      
+      /* Tooltip styles */
+      .col-header {
+        position: relative;
+      }
+      
+      .enterprise-table td, .enterprise-table th {
+        padding: 8px 12px;
+        font-size: 14px;
+        vertical-align: middle;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 300px; /* Default max width */
+      }
+      
+      .enterprise-table th.sorted { background: #e9edf5; }
+      .enterprise-table th:last-child,
+      .enterprise-table td:last-child { border-right: none; }
+      .enterprise-table tr { border-bottom: 1px solid #e3e8ee; }
+      .enterprise-table tbody tr:nth-child(odd) { background: #f9fafb; }
+      .enterprise-table tbody tr:hover { background: #e9edf5; transition: background 0.15s; }
+      .enterprise-table td, .enterprise-table th {
+        padding: 12px 18px;
+        font-size: 15px;
+        vertical-align: middle;
+        white-space: nowrap;
+      }
+      .drag-handle { cursor: grab; color: #babfc6; margin-right: 6px; }
+      .column-chooser-modal {
+        min-width: 320px;
+        border-radius: 12px;
+        box-shadow: 0 4px 32px rgba(24,39,75,0.14);
+      }
+      .column-chooser-list { max-height: 330px; overflow-y: auto; }
+      .column-chooser-li {
+        background: #f6f7fa;
+        border-radius: 6px;
+        margin-bottom: 7px;
+        padding: 8px 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        transition: background 0.13s;
+        gap: 12px;
+      }
+      .column-chooser-li:hover { background: #eef1f7; }      .preview-lineclamp {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        white-space: normal;
+        word-break: break-word;
+        max-width: 600px;
+        min-width: 280px;
+        max-height: 3.4em;
+        font-family: "Roboto", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+                      "Segoe UI", Arial, sans-serif;
+        font-size: 0.8em;
+        color: #334155;
+        cursor: pointer;
+        background: transparent;
+        border: none;
+        padding: 0;
+        transition: background 0.2s;
+      }
+      .preview-lineclamp:hover { background: #e0e7ef; }
+      .sort-arrow {
+        font-size: 0.95em;
+        margin-left: 5px;
+        vertical-align: middle;
+        color: #7c8799;
+      }
+      .filter-bar-row {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.75rem;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        transition: all 0.2s ease-in-out;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+      }
+
+      .filter-bar-row:hover {
+        border-color: #cbd5e1;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+      }
+
+      .filter-field,
+      .filter-operator {
+        min-width: 140px;
+        height: 40px;
+        padding: 0.5rem 1rem;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.5rem;
+        font-size: 0.875rem;
+        color: #1e293b;
+        background-color: white;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 0.5rem center;
+        background-size: 1.25rem;
+        appearance: none;
+        transition: all 0.2s ease-in-out;
+      }
+
+      .filter-value {
+        flex-grow: 1;
+        height: 40px;
+        padding: 0.5rem 1rem;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.5rem;
+        font-size: 0.875rem;
+        color: #1e293b;
+        background-color: white;
+        transition: all 0.2s ease-in-out;
+      }
+
+      .filter-field:hover,
+      .filter-operator:hover,
+      .filter-value:hover {
+        border-color: #cbd5e1;
+      }
+
+      .filter-field:focus,
+      .filter-operator:focus,
+      .filter-value:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+      }
+
+      .filter-remove-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 0.5rem;
+        color: #ef4444;
+        background: transparent;
+        transition: all 0.2s ease-in-out;
+      }
+
+      .filter-remove-btn:hover {
+        background-color: #fef2f2;
+        color: #dc2626;
+      }
+
+      .filter-remove-btn:focus {
+        outline: none;
+        box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+      }
+
+      #filtersContainer {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-top: 1rem;
+        width: 100%;
+      }
+
+      #addFilterBtn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        height: 40px;
+        padding: 0 1rem;
+        border: none;
+        border-radius: 0.5rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: #1e293b;
+        background-color: #f1f5f9;
+        transition: all 0.2s ease-in-out;
+      }
+
+      #addFilterBtn:hover {
+        background-color: #e2e8f0;
+      }
+
+      #addFilterBtn:focus {
+        outline: none;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+      }
+
+      #addFilterBtn i {
+        font-size: 0.875rem;
+      }
+
+      @media (max-width: 768px) {
+        .filter-bar-row {
+          flex-direction: column;
+          align-items: stretch;
+          gap: 0.5rem;
+          padding: 0.75rem;
+        }
+
+        .filter-field,
+        .filter-operator {
+          width: 100%;
+          min-width: unset;
+        }
+
+        .filter-remove-btn {
+          align-self: flex-end;
+          margin-top: 0.25rem;
+        }
+      }
+      /* Styles for the details modal content */
+      .message-fallback {
+        color: #777;
+        font-style: italic;
+      }
+      .message-text {
+        white-space: pre-wrap; /* Allow wrapping */
+        word-break: break-word; /* Break long words */
+        font-family: 'Roboto Mono', monospace; /* Monospaced font for code/text */
+        font-size: 13px;
+        background-color: #fff;
+        padding: 8px;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+      }
+      .message-media {
+        font-size: 12px;
+        color: #555;
+        margin-top: 5px;
+      }
+      .success-badge {
+        background-color: #d1fae5; /* Light green */
+        color: #065f46; /* Dark green */
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .error-badge {
+        background-color: #fee2e2; /* Light red */
+        color: #991b1b; /* Dark red */
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .info-badge {
+        background-color: #e0e7ff; /* Light indigo */
+        color: #3730a3; /* Dark indigo */
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .error-details {
+        font-size: 12px;
+        color: #b91c1c; /* Slightly lighter red for details */
+        margin-top: 4px;
+        display: block;
+      }
+
+      /* Enhanced Modal Styles */
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.6);
+        backdrop-filter: blur(4px);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        opacity: 0;
+        transition: opacity 0.2s ease-in-out;
+        will-change: opacity;
+        padding: 1.5rem;
+      }
+
+      .modal-overlay:not(.hidden) {
+        opacity: 1;
+      }
+
+      .modal-container {
+        max-width: min(95vw, 1200px);
+        width: 100%;
+        max-height: 90vh;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        transform: scale(0.95) translateY(-10px);
+        opacity: 0;
+        transition: all 0.2s ease-out;
+        display: flex;
+        flex-direction: column;
+        margin: auto;
+        position: relative;
+      }
+
+      .modal-overlay:not(.hidden) .modal-container {
+        transform: scale(1) translateY(0);
+        opacity: 1;
+      }
+
+      .modal-header {
+        padding: 1.25rem 1.5rem;
+        background: #f8fafc;
+        border-bottom: 1px solid #e2e8f0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+        border-top-left-radius: 12px;
+        border-top-right-radius: 12px;
+      }
+
+      .modal-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #0f172a;
+        line-height: 1.4;
+      }
+
+      .modal-close-btn {
+        width: 2rem;
+        height: 2rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0.375rem;
+        color: #64748b;
+        transition: all 0.15s ease;
+        cursor: pointer;
+        border: none;
+        background: transparent;
+      }
+
+      .modal-close-btn:hover {
+        background: #f1f5f9;
+        color: #0f172a;
+      }
+
+      .modal-body {
+        padding: 1.5rem;
+        background: #fff;
+        color: #333;
+        font-size: 14px;
+        line-height: 1.6;
+        overflow-y: auto;
+        max-height: calc(90vh - 4rem);
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .preview-area {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.375rem;
+        padding: 1rem;
+        min-height: 100px;
+        max-height: 300px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.875rem;
+        line-height: 1.5;
+      }
+
+      .status-badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.875rem;
+        font-weight: 500;
+        line-height: 1.25;
+      }
+
+      .status-success {
+        background-color: #ecfdf5;
+        color: #059669;
+      }
+
+      .status-error {
+        background-color: #fef2f2;
+        color: #dc2626;
+      }
+
+      .status-warning {
+        background-color: #fffbeb;
+        color: #d97706;
+      }
+
+      .status-info {
+        background-color: #eff6ff;
+        color: #3b82f6;
+      }
+
+      .message-cards-container {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.5rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .status-cards-container {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.5rem;
+      }
+
+      .message-card, .status-card {
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.5rem;
+        padding: 1.25rem;
+      }
+
+      .form-group {
+        margin-bottom: 1rem;
+      }
+
+      .form-label {
+        display: block;
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: #4b5563;
+        margin-bottom: 0.5rem;
+      }
+
+      .form-control {
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.375rem;
+        font-size: 0.875rem;
+        line-height: 1.25;
+        color: #1f2937;
+        background: #fff;
+        transition: border-color 0.15s ease-in-out;
+      }
+
+      .form-control[readonly] {
+        background-color: #f8fafc;
+        cursor: not-allowed;
+      }
+
+      .section-title {
+        font-size: 1rem;
+        font-weight: 600;
+        color: #1f2937;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .section-title i {
+        font-size: 0.875rem;
+        color: #6366f1;
+      }
+
+      @media (max-width: 768px) {
+        .message-cards-container,
+        .status-cards-container {
+          grid-template-columns: 1fr;
+          gap: 1rem;
+        }
+
+        .modal-container {
+          margin: 0.5rem;
+          max-height: calc(100vh - 1rem);
+        }
+      }
+
+      /* Column customization styles */
+      .column-chooser-list {
+        max-height: 400px;
+        overflow-y: auto;
+        padding: 1rem;
+      }
+
+      .column-item {
+        cursor: move;
+      }
+
+      .column-item.dragging {
+        opacity: 0.5;
+      }
+
+      /* Toggle switch styles */
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 50px;
+        height: 24px;
+      }
+
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: .4s;
+      }
+
+      .slider:before {
+        position: absolute;
+        content: "";
+        height: 16px;
+        width: 16px;
+        left: 4px;
+        bottom: 4px;
+        background-color: white;
+        transition: .4s;
+      }
+
+      input:checked + .slider {
+        background-color: #2196F3;
+      }
+
+      input:focus + .slider {
+        box-shadow: 0 0 1px #2196F3;
+      }
+
+      input:checked + .slider:before {
+        transform: translateX(26px);
+      }
+
+      .slider.round {
+        border-radius: 24px;
+      }
+
+      .slider.round:before {
+        border-radius: 50%;
+      }
+    </style>
+{% endblock %}
+
+{% block header %}
+<div class="flex items-center w-full">
+  
+  <div class="flex flex-row w-full items-center justify-between">
+        
+  <h1 class="page-title">
+    <span>Admin Events</span>
+  </h1>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block content %}
+{# First import the modal body #}
+{% from 'events_edit_modal.html' import body as modal_body with context %}
+
+<!-- Column Chooser Modal -->
+<div id="column-chooser-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="column-chooser-title">
+    <div class="modal-container bg-white rounded-lg shadow-xl max-w-2xl">
+        <div class="modal-header bg-gray-50 border-b border-gray-200 px-6 py-4">
+            <h3 id="column-chooser-title" class="modal-title text-xl font-semibold text-gray-800">Customize Columns</h3>
+            <button type="button" class="modal-close-btn text-gray-500 hover:text-gray-700 transition-colors" aria-label="Close modal">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="modal-body p-6">
+            <div class="mb-6">
+                <div class="flex items-center justify-between mb-4">
+                    <p class="text-sm text-gray-600">Drag and drop columns to reorder them. Toggle visibility using the switches.</p>
+                    <button type="button" id="reset-columns" class="text-sm text-blue-600 hover:text-blue-800 transition-colors">
+                        Reset to Default
+                    </button>
+                </div>                <div class="relative">
+                    <input type="text" id="column-search"                           class="w-full px-4 py-2 border border-gray-300 rounded-lg pl-10 pr-10 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
+                           placeholder="Search by field name, display name, or description..."
+                           aria-label="Search columns by technical field name (e.g. 'source_channel'), display name (e.g. 'Source'), or description"
+                           autocomplete="off">
+                    <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+                    <button type="button" id="clear-search" 
+                            class="hidden absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                            aria-label="Clear search">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>                <div class="text-xs text-gray-500 mt-2">
+                    <span class="font-medium">Search tips:</span> Try "source", "msg", "time", "error", "type", "status" or technical names like "source_channel", "posting_success"
+                </div>
+            </div>            <div class="columns-container max-h-[400px] overflow-y-auto">
+                <!-- Selected Columns Section -->
+                <div class="column-section mb-6">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-sm font-medium text-gray-700">
+                            <i class="fas fa-check-circle text-green-500 mr-2"></i>
+                            Selected Columns
+                            <span id="selected-count" class="ml-2 px-2 py-1 bg-green-100 text-green-700 text-xs font-medium rounded-full">0</span>
+                        </h4>
+                        <button type="button" id="clear-all-columns" 
+                                class="text-xs text-red-600 hover:text-red-800 transition-colors"
+                                title="Unselect all columns">
+                            Clear All
+                        </button>
+                    </div>
+                    <ul id="selected-column-list" class="column-chooser-list space-y-2" 
+                        role="list" aria-label="Selected columns - drag to reorder">
+                        <!-- Selected column items will be dynamically inserted here -->
+                    </ul>
+                </div>
+
+                <!-- Available Columns Section -->
+                <div class="column-section">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-sm font-medium text-gray-700">
+                            <i class="fas fa-list text-gray-400 mr-2"></i>
+                            Available Columns
+                            <span id="available-count" class="ml-2 px-2 py-1 bg-gray-100 text-gray-600 text-xs font-medium rounded-full">0</span>
+                        </h4>
+                        <button type="button" id="select-all-columns" 
+                                class="text-xs text-blue-600 hover:text-blue-800 transition-colors"
+                                title="Select all columns">
+                            Select All
+                        </button>
+                    </div>
+                    <ul id="available-column-list" class="column-chooser-list space-y-2" 
+                        role="list" aria-label="Available columns - click to select">
+                        <!-- Available column items will be dynamically inserted here -->
+                    </ul>
+                </div>
+
+                <div id="no-results-message" class="hidden text-center py-8 text-gray-500">
+                    <i class="fas fa-search text-2xl text-gray-300 mb-2"></i>
+                    <p class="text-sm">No columns match your search.</p>
+                    <p class="text-xs text-gray-400">Try different keywords or clear the search.</p>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-end space-x-3">
+            <button type="button" id="cancel-columns" class="btn-secondary">
+                Cancel
+            </button>
+            <button type="button" id="apply-columns" class="btn-primary">
+                Apply Changes
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div id="preview-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-container bg-white rounded-lg shadow-xl">
+        <div class="flex items-center justify-between p-4 border-b">
+            <h3 class="text-xl font-semibold text-gray-900">Message Preview</h3>
+            <button type="button" class="text-gray-400 hover:text-gray-500" onclick="closeModal('preview-modal')">
+                <span class="sr-only">Close</span>
+                <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+        <div class="p-4 max-h-[70vh] overflow-y-auto">
+            <div id="preview-content"></div>
+        </div>
+    </div>
+</div>
+<!-- Table Controls -->
+<div class="mb-6">
+  <div class="flex flex-wrap items-center gap-3 mb-4">
+    <button id="openColumnChooser" class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+      <i class="fas fa-columns"></i>
+      <span>Customize Columns</span>
+    </button>
+    <button id="addFilterBtn" class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+      <i class="fas fa-filter"></i>
+      <span>Add Filter</span>
+      <span class="filter-count hidden ml-1 px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs font-medium rounded-full"></span>
+    </button>
+  </div>
+  <div id="filtersContainer" class="w-full" role="region" aria-label="Active filters"></div>
+</div>
+<!-- Events Table -->
+<div class="overflow-x-auto">
+    <table id="eventsTable" class="enterprise-table w-full">
+        <thead>
+          <!-- Dynamic headers will be generated by renderTable() function -->
+        </thead>
+        <tbody id="eventsTbody"></tbody>
+    </table>
+</div>
+
+
+
+{# Edit and Details Modals #}
+{{ modal('edit-modal', 'Edit Event', modal_body) }}
+{{ modal('details-modal', 'Event Details', modal_body) }}
+
+{% endblock %}
+
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/utils/sanitize.js') }}"></script>
+  <script src="{{ url_for('static', filename='events_edit_modal.js') }}"></script>
+
+  <script>
+    console.log('Admin Events page script started.');
+
+    // Initialize cache for events_edit_modal.js if its initCache function is available
+    if (typeof initCache === "function") {
+        initCache({}); // Pass empty cache data
+    }
+
+/*==========================================================================================
+  → GLOBAL VARIABLES & UTILITY FUNCTIONS
+==========================================================================================*/
+const FIELDS_KEY = "admin_stats_visible_fields_v2";
+const ORDER_KEY = "admin_stats_column_order_v2";
+
+let allFields = [], eventsData = []; 
+
+let displayedEvents = []; // ← holds the current filtered+sorted list
+
+let activeFilters = [];
+let sortState = { column: "timestamp", dir: -1 };
+
+const FILTER_OPERATORS = ["IS", "IS NOT", "EXISTS", "DOES NOT EXIST"];
+let FILTER_FIELDS = [
+  "timestamp", "event", "edit_timestamp", "source_channel", "source_channel_name",
+  "dest_channel", "dest_channel_name", "message_id", "media_type", "file_size_bytes",
+  "original_size", "translated_size", "translation_time", "retry_count",
+  "posting_success", "api_error_code", "exception_message", "preview", "source_content",
+  "actions"
+];
+
+function prettifyFieldName(field) {
+  // Enhanced humanization with automatic and manual mappings
+  const manualMappings = {
+    "timestamp": { short: "Time", long: "Timestamp", tooltip: "When the event occurred" },
+    "event": { short: "Type", long: "Event Type", tooltip: "Type of event (create, edit, delete)" },
+    "edit_timestamp": { short: "Edited", long: "Last Edited", tooltip: "When the event was last modified" },
+    "source_channel": { short: "Source ID", long: "Source Channel ID", tooltip: "Numeric ID of the source channel" },
+    "source_channel_name": { short: "Source", long: "Source Channel", tooltip: "Name of the source channel" },
+    "dest_channel": { short: "Dest ID", long: "Destination Channel ID", tooltip: "Numeric ID of the destination channel" },
+    "dest_channel_name": { short: "Destination", long: "Destination Channel", tooltip: "Name of the destination channel" },
+    "message_id": { short: "Message ID", long: "Message ID", tooltip: "Unique identifier for the message" },
+    "dest_message_id": { short: "Dest Msg ID", long: "Destination Message ID", tooltip: "Message ID in destination channel" },
+    "media_type": { short: "Media", long: "Media Type", tooltip: "Type of media attached (photo, video, document)" },
+    "file_size_bytes": { short: "File Size", long: "File Size", tooltip: "Size of attached file in bytes" },
+    "file_path": { short: "File Path", long: "File Path", tooltip: "Path to the media file" },
+    "original_size": { short: "Original", long: "Original Size", tooltip: "Character count of original message" },
+    "translated_size": { short: "Translated", long: "Translated Size", tooltip: "Character count of translated message" },
+    "previous_size": { short: "Previous", long: "Previous Size", tooltip: "Size before edit" },
+    "new_size": { short: "New", long: "New Size", tooltip: "Size after edit" },
+    "translation_time": { short: "Duration", long: "Translation Time", tooltip: "Time taken to translate in seconds" },
+    "retry_count": { short: "Retries", long: "Retry Count", tooltip: "Number of retry attempts made" },
+    "posting_success": { short: "Status", long: "Success Status", tooltip: "Whether the operation completed successfully" },
+    "api_error_code": { short: "Error Code", long: "API Error Code", tooltip: "Error code returned by the API" },
+    "exception_message": { short: "Error", long: "Error Message", tooltip: "Detailed error or exception message" },
+    "preview": { short: "Preview", long: "Message Preview", tooltip: "Preview of the translated message content" },
+    "source_content": { short: "Source", long: "Source Content", tooltip: "Original message content" },
+    "source_message": { short: "Source Msg", long: "Source Message", tooltip: "Full source message content" },
+    "translated_message": { short: "Translation", long: "Translated Message", tooltip: "Full translated message content" },
+    "actions": { short: "Actions", long: "Actions", tooltip: "Available actions (edit, view, delete)" },    // Additional common fields
+    "id": { short: "ID", long: "Identifier", tooltip: "Unique record identifier" },
+    "user_id": { short: "User ID", long: "User ID", tooltip: "User identifier" },
+    "created_at": { short: "Created", long: "Created At", tooltip: "When the record was created" },
+    "updated_at": { short: "Updated", long: "Updated At", tooltip: "When the record was last updated" },
+    "deleted_at": { short: "Deleted", long: "Deleted At", tooltip: "When the record was deleted" },
+    "ip_address": { short: "IP Address", long: "IP Address", tooltip: "Internet Protocol address" },
+    "user_agent": { short: "Browser", long: "User Agent", tooltip: "Browser and device information" },
+    "request_id": { short: "Request ID", long: "Request ID", tooltip: "Unique request identifier" },
+    "response_code": { short: "Response", long: "Response Code", tooltip: "HTTP response status code" },
+    "content_type": { short: "Content", long: "Content Type", tooltip: "MIME type of the content" },
+    "content_length": { short: "Size", long: "Content Length", tooltip: "Size of the content in bytes" },
+    "session_id": { short: "Session", long: "Session ID", tooltip: "User session identifier" },
+    "error_code": { short: "Error Code", long: "Error Code", tooltip: "System error code" },
+    "exception_message": { short: "Error", long: "Error Message", tooltip: "Detailed error description" },
+    "status_code": { short: "Status", long: "Status Code", tooltip: "Operation status code" },
+    "batch_id": { short: "Batch", long: "Batch ID", tooltip: "Processing batch identifier" },
+    "job_id": { short: "Job", long: "Job ID", tooltip: "Background job identifier" },
+    "task_id": { short: "Task", long: "Task ID", tooltip: "Task identifier" },
+    "process_id": { short: "Process", long: "Process ID", tooltip: "System process identifier" },
+    "thread_id": { short: "Thread", long: "Thread ID", tooltip: "Execution thread identifier" }
+  };
+
+  // Check for manual mapping first
+  if (manualMappings[field]) {
+    return manualMappings[field];
+  }
+
+  // Automatic humanization for unmapped fields
+  let humanized = field;
+  
+  // Handle common patterns and transformations
+  humanized = humanized
+    // Remove common prefixes
+    .replace(/^(event_|user_|customer_|admin_|api_)/i, '')
+    // Remove trailing _id, _ids, _at, _count, _type
+    .replace(/_(ids?|at|count|type)$/i, '')
+    // Split on underscores and camelCase
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    // Handle numeric suffixes
+    .replace(/(\d+)$/g, ' $1')
+    // Handle common abbreviations and technical terms
+    .replace(/\bapi\b/gi, 'API')
+    .replace(/\burl\b/gi, 'URL')
+    .replace(/\bhttp\b/gi, 'HTTP')
+    .replace(/\bhttps\b/gi, 'HTTPS')
+    .replace(/\bip\b/gi, 'IP')
+    .replace(/\bid\b/gi, 'ID')
+    .replace(/\bjson\b/gi, 'JSON')
+    .replace(/\bxml\b/gi, 'XML')
+    .replace(/\bhtml\b/gi, 'HTML')
+    .replace(/\bcss\b/gi, 'CSS')
+    .replace(/\bjs\b/gi, 'JS')
+    .replace(/\bsql\b/gi, 'SQL')
+    .replace(/\buuid\b/gi, 'UUID')
+    // Capitalize each word
+    .split(' ')
+    .map(word => {
+      if (!word) return word;
+      // Keep certain abbreviations uppercase (already handled above, but ensure consistency)
+      const upperCaseWords = ['ID', 'API', 'URL', 'HTTP', 'HTTPS', 'JSON', 'XML', 'HTML', 'CSS', 'JS', 'SQL', 'UUID', 'IP'];
+      const upperWord = word.toUpperCase();
+      if (upperCaseWords.includes(upperWord)) {
+        return upperWord;
+      }
+      // Regular capitalization
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ')
+    // Clean up extra spaces
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Generate meaningful tooltip
+  const tooltip = `Information about ${humanized.toLowerCase()}`;
+  
+  // Create short version (limit to ~15 characters for table headers)
+  let short = humanized;
+  if (humanized.length > 15) {
+    const words = humanized.split(' ');
+    if (words.length > 1) {
+      // Create intelligent abbreviations
+      if (words.length === 2) {
+        // For two words, use first word + first letter of second
+        short = words[0] + ' ' + words[1].charAt(0);
+      } else if (words.length > 2) {
+        // For multiple words, try using first letters of each word
+        const initials = words.map(w => w.charAt(0)).join('');
+        if (initials.length >= 3 && initials.length <= 8) {
+          short = initials;
+        } else {
+          // Use first word + abbreviation indicator
+          short = words[0] + '+';
+        }
+      }
+    } else {
+      // Single long word - intelligently truncate
+      if (humanized.includes(' ')) {
+        // If somehow has spaces but was treated as single word
+        short = humanized.substring(0, 12) + '...';
+      } else {
+        // Try to find a natural break point (vowel after consonant)
+        let truncatePoint = 12;
+        for (let i = 8; i < Math.min(12, humanized.length); i++) {
+          if (/[aeiou]/i.test(humanized[i]) && /[bcdfghjklmnpqrstvwxyz]/i.test(humanized[i-1])) {
+            truncatePoint = i;
+            break;
+          }
+        }
+        short = humanized.substring(0, truncatePoint) + '...';
+      }
+    }
+  }
+
+  // Ensure short name is at least 2 characters
+  if (short.length < 2) {
+    short = humanized.substring(0, Math.min(8, humanized.length));
+  }
+
+  return {
+    short: short,
+    long: humanized,
+    tooltip: tooltip
+  };
+}
+
+function getVisibleFields() {
+  const stored = localStorage.getItem(FIELDS_KEY);
+  if (stored) return JSON.parse(stored);
+  // Default minimal set of visible fields
+  return [
+    "timestamp",
+    "event",          // Type column
+    // "source_channel", // ID might be too much for default view
+    "source_channel_name",
+    // "dest_channel",   // ID might be too much for default view
+    "dest_channel_name",
+    "message_id",
+    "posting_success", // Status column
+    "preview",        // Translated message from event
+    "actions"         // Always include actions column
+  ];
+}
+
+function setVisibleFields(arr) { 
+  // Ensure actions column is always included
+  if (!arr.includes("actions")) {
+    arr.push("actions");
+  }
+  localStorage.setItem(FIELDS_KEY, JSON.stringify(arr)); 
+}
+
+function getColumnOrder() {
+  const stored = localStorage.getItem(ORDER_KEY);
+  // Ensure allFields is populated before filtering, or filter against a known full list initially
+  const defaultOrder = allFields.length > 0 ? allFields.slice() : FILTER_FIELDS.slice();
+  if (stored) {
+      const parsedOrder = JSON.parse(stored);
+      // Filter out any fields that might no longer exist
+      return parsedOrder.filter(f => defaultOrder.includes(f));
+  }
+  return defaultOrder;
+}
+function setColumnOrder(arr) { localStorage.setItem(ORDER_KEY, JSON.stringify(arr)); }
+
+function updateModal(id, title, body, footer) {
+  const titleEl = document.getElementById(id + "-title");
+  if (titleEl) titleEl.textContent = title;
+  
+  const bodyEl = document.querySelector("#" + id + " .modal-body");
+  if (bodyEl) bodyEl.innerHTML = body;
+  
+  const footerEl = document.querySelector("#" + id + " .modal-footer");
+  if (footerEl && footer !== undefined) footerEl.innerHTML = footer;
+}
+
+function showPreviewModal(htmlContent) { // Renamed param for clarity
+  updateModal("preview-modal", "Full Message Preview",
+    `<div class="bg-slate-50 border border-slate-200 rounded-lg p-3 font-roboto text-base text-gray-800" style="white-space:pre-wrap; word-break:break-word;">${htmlContent}</div>`,
+    `<button onclick="closeModal('preview-modal')" class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400">Close</button>`);
+  openModal("preview-modal");
+}
+
+function showColumnChooser() {
+  // Use the existing static modal instead of updateModal to preserve search functionality
+  const modal = document.getElementById("column-chooser-modal");
+  const selectedColumnList = document.getElementById("selected-column-list");
+  const availableColumnList = document.getElementById("available-column-list");
+  
+  // Clear existing content
+  selectedColumnList.innerHTML = '';
+  availableColumnList.innerHTML = '';
+  
+  // Generate column items directly into the static modal
+  const order = getColumnOrder();
+  const visibleFields = getVisibleFields();
+  
+  // Separate selected and available columns
+  const selectedColumns = [];
+  const availableColumns = [];
+  
+  order.forEach(field => {
+    const isVisible = visibleFields.includes(field);
+    if (isVisible) {
+      selectedColumns.push(field);
+    } else {
+      availableColumns.push(field);
+    }
+  });
+  
+  // Render selected columns
+  selectedColumns.forEach(field => {
+    const columnItem = createColumnItem(field, true);
+    selectedColumnList.appendChild(columnItem);
+  });
+  
+  // Render available columns
+  availableColumns.forEach(field => {
+    const columnItem = createColumnItem(field, false);
+    availableColumnList.appendChild(columnItem);
+  });
+  
+  // Update counts
+  updateColumnCounts();
+  
+  // Show the modal
+  modal.classList.remove('hidden');
+  modal.style.display = 'flex';
+  
+  // Initialize Sortable for drag and drop on both lists
+  initializeSortable(selectedColumnList, true);
+  initializeSortable(availableColumnList, false);
+  
+  // Initialize search functionality
+  initializeColumnSearch();
+  
+  // Initialize bulk action buttons
+  initializeBulkActions();
+}
+
+function createColumnItem(field, isSelected) {
+  const fieldNameParts = prettifyFieldName(field);
+  const displayName = fieldNameParts.short;
+  const tooltipText = fieldNameParts.tooltip || '';
+  
+  const columnItem = document.createElement('li');
+  columnItem.className = `column-chooser-li ${isSelected ? 'selected' : 'available'}`;
+  columnItem.setAttribute('data-field', field);
+  columnItem.setAttribute('title', tooltipText);
+  
+  columnItem.innerHTML = `
+    <div class="drag-handle">
+      <i class="fas fa-grip-vertical"></i>
+    </div>
+    <div class="column-info">
+      <div class="column-name">${displayName}</div>
+      <div class="column-description">${tooltipText}</div>
+    </div>
+    <div class="switch-container">
+      <label class="switch">
+        <input type="checkbox" data-field="${field}" ${isSelected ? 'checked' : ''}>
+        <span class="slider round"></span>
+      </label>
+    </div>
+  `;
+  
+  // Add change event listener for the checkbox
+  const checkbox = columnItem.querySelector('input[type="checkbox"]');
+  checkbox.addEventListener('change', function() {
+    moveColumnBetweenSections(field, this.checked);
+  });
+  
+  return columnItem;
+}
+
+function initializeSortable(listElement, isSelectedList) {
+  if (listElement._sortable) {
+    listElement._sortable.destroy();
+  }
+  
+  listElement._sortable = Sortable.create(listElement, {
+    group: isSelectedList ? 'selected-columns' : 'available-columns',
+    handle: ".drag-handle",
+    animation: 180,
+    ghostClass: 'sortable-ghost',
+    chosenClass: 'sortable-chosen',
+    dragClass: 'sortable-drag',
+    onEnd: function(evt) {
+      // Update column counts after any movement
+      updateColumnCounts();
+    }
+  });
+}
+
+function moveColumnBetweenSections(field, shouldBeSelected) {
+  const selectedList = document.getElementById("selected-column-list");
+  const availableList = document.getElementById("available-column-list");
+  
+  // Find the column item
+  const columnItem = document.querySelector(`[data-field="${field}"]`);
+  if (!columnItem) return;
+  
+  // Animate the transition
+  columnItem.style.transition = 'all 0.2s ease';
+  columnItem.style.transform = 'scale(0.95)';
+  columnItem.style.opacity = '0.7';
+  
+  setTimeout(() => {
+    // Remove from current location
+    columnItem.remove();
+    
+    // Create new item in the correct section
+    const newColumnItem = createColumnItem(field, shouldBeSelected);
+    
+    if (shouldBeSelected) {
+      selectedList.appendChild(newColumnItem);
+      newColumnItem.classList.add('selected');
+      newColumnItem.classList.remove('available');
+    } else {
+      availableList.appendChild(newColumnItem);
+      newColumnItem.classList.add('available');
+      newColumnItem.classList.remove('selected');
+    }
+    
+    // Animate in
+    newColumnItem.style.transition = 'all 0.2s ease';
+    newColumnItem.style.transform = 'scale(1.05)';
+    setTimeout(() => {
+      newColumnItem.style.transform = 'scale(1)';
+    }, 100);
+    
+    // Update counts
+    updateColumnCounts();
+    
+    // Re-initialize sortable if needed
+    if (shouldBeSelected) {
+      initializeSortable(selectedList, true);
+    } else {
+      initializeSortable(availableList, false);
+    }
+  }, 150);
+}
+
+function updateColumnCounts() {
+  const selectedCount = document.getElementById("selected-column-list").children.length;
+  const availableCount = document.getElementById("available-column-list").children.length;
+  
+  document.getElementById("selected-count").textContent = selectedCount;
+  document.getElementById("available-count").textContent = availableCount;
+}
+
+function initializeBulkActions() {
+  const selectAllBtn = document.getElementById("select-all-columns");
+  const clearAllBtn = document.getElementById("clear-all-columns");
+  
+  selectAllBtn.addEventListener('click', function() {
+    const availableItems = document.querySelectorAll('#available-column-list .column-chooser-li');
+    availableItems.forEach(item => {
+      const checkbox = item.querySelector('input[type="checkbox"]');
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new Event('change'));
+    });
+  });
+  
+  clearAllBtn.addEventListener('click', function() {
+    const selectedItems = document.querySelectorAll('#selected-column-list .column-chooser-li');
+    selectedItems.forEach(item => {
+      const checkbox = item.querySelector('input[type="checkbox"]');
+      checkbox.checked = false;
+      checkbox.dispatchEvent(new Event('change'));
+    });
+  });
+}
+
+function initializeColumnSearch() {
+  const columnSearchInput = document.getElementById("column-search");
+  const clearSearchButton = document.getElementById("clear-search");
+  const selectedList = document.getElementById("selected-column-list");
+  const availableList = document.getElementById("available-column-list");
+  
+  if (!columnSearchInput || !selectedList || !availableList) return;
+  
+  columnSearchInput.addEventListener("input", function(e) {
+    const searchTerm = e.target.value.toLowerCase().trim();
+    const selectedItems = selectedList.querySelectorAll(".column-chooser-li");
+    const availableItems = availableList.querySelectorAll(".column-chooser-li");
+    const noResultsMessage = document.getElementById("no-results-message");
+    
+    // Show/hide clear button
+    if (clearSearchButton) {
+      clearSearchButton.classList.toggle('hidden', searchTerm.length === 0);
+    }
+    
+    let visibleCount = 0;
+    
+    // Function to filter items in a list
+    function filterItems(items) {
+      items.forEach(item => {
+        const fieldName = item.getAttribute("data-field");
+        const displayNameEl = item.querySelector('.column-name');
+        const displayName = displayNameEl ? displayNameEl.textContent.toLowerCase() : '';
+        const tooltip = item.getAttribute("title") ? item.getAttribute("title").toLowerCase() : '';
+        
+        // Get humanized field name for comprehensive search
+        const fieldParts = prettifyFieldName(fieldName);
+        const longName = fieldParts.long ? fieldParts.long.toLowerCase() : '';
+        
+        // Create searchable text combining all variants
+        const searchableText = [
+          fieldName.toLowerCase(),
+          displayName,
+          longName,
+          tooltip,
+          fieldName.replace(/_/g, ' ').toLowerCase(),
+          fieldName.replace(/_/g, '').toLowerCase()
+        ].join(' ');
+        
+        // Simple search - if search term is found anywhere in searchable text
+        const matches = searchTerm === '' || searchableText.includes(searchTerm) ||
+          // Enhanced fuzzy matching
+          (searchTerm === 'src' && searchableText.includes('source')) ||
+          (searchTerm === 'dest' && searchableText.includes('destination')) ||
+          (searchTerm === 'msg' && searchableText.includes('message')) ||
+          (searchTerm === 'type' && (searchableText.includes('event') || searchableText.includes('media'))) ||
+          (searchTerm === 'success' && searchableText.includes('posting_success')) ||
+          (searchTerm === 'status' && searchableText.includes('posting_success')) ||
+          (searchTerm === 'error' && (searchableText.includes('error') || searchableText.includes('exception')));
+        
+        if (matches) {
+          item.style.display = 'flex';
+          visibleCount++;
+        } else {
+          item.style.display = 'none';
+        }
+      });
+    }
+    
+    // Filter both selected and available items
+    filterItems(selectedItems);
+    filterItems(availableItems);
+    
+    // Show/hide section headers based on content
+    const selectedSection = selectedList.parentElement;
+    const availableSection = availableList.parentElement;
+    const hasVisibleSelected = Array.from(selectedItems).some(item => item.style.display !== 'none');
+    const hasVisibleAvailable = Array.from(availableItems).some(item => item.style.display !== 'none');
+    
+    if (searchTerm.length > 0) {
+      selectedSection.style.display = hasVisibleSelected ? 'block' : 'none';
+      availableSection.style.display = hasVisibleAvailable ? 'block' : 'none';
+    } else {
+      selectedSection.style.display = 'block';
+      availableSection.style.display = 'block';
+    }
+    
+    // Show/hide no results message
+    if (noResultsMessage) {
+      noResultsMessage.classList.toggle('hidden', !(visibleCount === 0 && searchTerm.length > 0));
+    }
+  });
+  
+  // Clear search functionality
+  if (clearSearchButton) {
+    clearSearchButton.addEventListener("click", function() {
+      columnSearchInput.value = "";
+      columnSearchInput.dispatchEvent(new Event('input'));
+      columnSearchInput.focus();
+    });
+  }
+  
+  // Keyboard shortcuts
+  columnSearchInput.addEventListener("keydown", function(e) {
+    if (e.key === "Escape") {
+      columnSearchInput.value = "";
+      columnSearchInput.dispatchEvent(new Event('input'));
+    }
+  });
+}
+
+function applyColumnChangesAndClose() {
+    const selectedList = document.getElementById("selected-column-list");
+    const availableList = document.getElementById("available-column-list");
+    
+    // Get selected columns from the selected list
+    const selectedCheckboxes = selectedList.querySelectorAll('input[type="checkbox"]');
+    let newVisibleFields = [];
+    selectedCheckboxes.forEach(cb => {
+        if (cb.checked) {
+            newVisibleFields.push(cb.getAttribute("data-field"));
+        }
+    });
+    setVisibleFields(newVisibleFields);
+
+    // Get the new order from the selected list (since that's where users can reorder)
+    const selectedElements = selectedList.querySelectorAll(".column-chooser-li");
+    const selectedOrder = Array.from(selectedElements).map(el => el.getAttribute("data-field"));
+    
+    // Add available columns to maintain complete order
+    const availableElements = availableList.querySelectorAll(".column-chooser-li");
+    const availableOrder = Array.from(availableElements).map(el => el.getAttribute("data-field"));
+    
+    // Combine: selected columns first (in their order), then available columns
+    const newOrder = [...selectedOrder, ...availableOrder];
+    setColumnOrder(newOrder);
+    
+    renderTable(); 
+    updateTableColumnVisibility(); 
+    closeModal('column-chooser-modal');
+}
+
+
+function compareValues(a, b, field) {
+  if (field === "timestamp" || field === "edit_timestamp") {
+    const dateA = a ? new Date(a) : new Date(0); 
+    const dateB = b ? new Date(b) : new Date(0);
+    return dateA - dateB;
+  }
+  if (field === "posting_success") {
+    const valA = a === true ? 1 : (a === false ? 0 : -1); 
+    const valB = b === true ? 1 : (b === false ? 0 : -1);
+    return valA - valB;
+  }
+
+  const numA = parseFloat(a);
+  const numB = parseFloat(b);
+
+  if (!isNaN(numA) && !isNaN(numB) && String(a).match(/^\d+(\.\d+)?$/) && String(b).match(/^\d+(\.\d+)?$/) ) {
+    return numA - numB;
+  }
+  
+  return (String(a ?? "")).toLowerCase().localeCompare(String(b ?? "").toLowerCase());
+}
+
+function filterData(rawData) {
+  return rawData.filter(event => {
+    return activeFilters.every(filter => {
+      const { field, operator, value } = filter;
+      let eventValue = event[field];
+      
+      if (field === "source_content") {
+          const sourceMsg = event.source_channel && event.message_id ? 
+                            findCachedMessage(String(event.source_channel), String(event.message_id)) : null;
+          eventValue = sourceMsg ? (sourceMsg.text || sourceMsg.caption || "") : "";
+      }
+
+      if (typeof eventValue === 'boolean') {
+        eventValue = String(eventValue); 
+      }
+      eventValue = eventValue ?? "";
+
+
+      const filterValues = value.split(",").map(v => v.trim().toLowerCase());
+      const lowerEventValue = String(eventValue).toLowerCase();
+
+      switch (operator) {
+        case "IS":
+          return filterValues.includes(lowerEventValue);
+        case "IS NOT":
+          return !filterValues.includes(lowerEventValue);
+        case "EXISTS": 
+          return lowerEventValue !== "";
+        case "DOES NOT EXIST": 
+          return lowerEventValue === "";
+        default: return true;
+      }
+    });
+  });
+}
+
+function renderTable() {
+  const order = getColumnOrder();
+  const visibleFields = getVisibleFields();
+  
+  let table = document.getElementById("eventsTable");
+  if (!table) { console.error("Table element #eventsTable not found!"); return; }
+
+  let head = table.querySelector("thead");
+  if (!head) {
+      head = document.createElement("thead");
+      table.appendChild(head);
+  }
+  head.innerHTML = '<tr id="eventsTableHeadRow"></tr>'; 
+  const headRow = head.querySelector("#eventsTableHeadRow");
+
+  order.forEach(field => {
+    if (!visibleFields.includes(field)) return;
+    const fieldNameParts = prettifyFieldName(field);
+    const th = document.createElement("th");
+    // Use string concatenation for className and innerHTML
+    th.className = 'col-header col-' + field + ' px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+    th.dataset.field = field;
+    th.title = fieldNameParts.tooltip || fieldNameParts.short;
+    th.innerHTML = fieldNameParts.short + ' <span class="sort-arrow"></span>';
+    th.addEventListener("click", () => {
+      if (sortState.column === field) {
+        sortState.dir *= -1;
+      } else {
+        sortState.column = field;
+        sortState.dir = 1;
+      }
+      displayedEvents.sort((a, b) => compareValues(a[field], b[field], field) * sortState.dir);
+      if (field === "source_content") {
+          displayedEvents.sort((a, b) => {
+              const msgA = a.source_channel && a.message_id ? findCachedMessage(String(a.source_channel), String(a.message_id)) : null;
+              const valA = msgA ? (msgA.text || msgA.caption || "") : "";
+              const msgB = b.source_channel && b.message_id ? findCachedMessage(String(b.source_channel), String(b.message_id)) : null;
+              const valB = msgB ? (msgB.text || msgB.caption || "") : "";
+              return compareValues(valA, valB, field) * sortState.dir;
+          });
+      }
+      renderTableBody(displayedEvents);
+      updateSortArrows();
+    });
+    headRow.appendChild(th);
+  });
+  updateSortArrows(); 
+
+  displayedEvents = filterData(eventsData);
+  if (sortState.column === "timestamp" && eventsData.length > 0) {
+    displayedEvents.sort((a, b) => compareValues(a.timestamp, b.timestamp, "timestamp") * sortState.dir);
+  }
+  renderTableBody(displayedEvents);
+}
+
+function updateSortArrows() {
+  document.querySelectorAll("#eventsTableHeadRow th").forEach(th => {
+    const arrow = th.querySelector(".sort-arrow");
+    if (!arrow) return;
+    if (th.dataset.field === sortState.column) {
+      arrow.innerHTML = sortState.dir === 1 ? "▲" : "▼";
+    } else {
+      arrow.innerHTML = "";
+    }
+  });
+}
+
+function renderActions(event) {
+    return `
+        <div class="flex items-center space-x-2">
+            <button onclick="showEditOrDetails(event, '${event.id}', true)" 
+                    class="px-2 py-1 text-sm text-blue-600 hover:text-blue-800">
+                <i class="fas fa-edit"></i>
+            </button>
+            <button onclick="showEditOrDetails(event, '${event.id}', false)"
+                    class="px-2 py-1 text-sm text-gray-600 hover:text-gray-800">
+                <i class="fas fa-eye"></i>
+            </button>
+        </div>
+    `;
+}
+
+function formatTimestamp(timestamp) {
+  if (!timestamp) return '-';
+  const date = new Date(timestamp);
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${hours}:${minutes} ${day}-${month}-${year}`;
+}
+
+function renderTableBody(data) {
+  const tbody = document.getElementById("eventsTbody");
+  if (!tbody) { console.error("Tbody element #eventsTbody not found!"); return; }
+  tbody.innerHTML = ""; 
+
+  const visibleFields = getVisibleFields();
+  const order = getColumnOrder();
+
+  data.forEach(event => {
+    const row = tbody.insertRow();
+    row.className = "event-row"; 
+    row.addEventListener('click', (e) => {
+        if (e.target.closest('button, a, input, .preview-lineclamp')) {
+            return;
+        }
+        showDetailsModal(event); 
+    });
+
+    // Add cells for all visible fields
+    order.forEach(field => {
+      if (!visibleFields.includes(field)) return;
+      const cell = row.insertCell();
+      cell.className = "col-" + field;
+
+      let cellValue = event[field];
+      // Format timestamps in HH:MM DD-MM-YYYY format
+      if (field === "timestamp" || field === "edit_timestamp") {
+        cellValue = formatTimestamp(cellValue);
+      } else if (field === "posting_success") {
+        cellValue = cellValue ? '<span class="success-badge">OK</span>' : '<span class="error-badge">FAIL</span>';
+      } else if (field === "preview" && typeof cellValue === "string") {
+        cellValue = `<button class="preview-lineclamp" onclick="event.stopPropagation(); showPreviewModal(\`${cellValue.replace(/`/g, '\\`')}\`)">${cellValue}</button>`;
+      } else if (field === "actions") {
+        cellValue = renderActions(event);
+      }
+      cell.innerHTML = cellValue ?? "";
+      
+      if (cell.className.includes("col-message_id") || cell.className.includes("col-retry_count")) {
+        cell.style.textAlign = "right";
+      }
+    });
+
+    // Add action buttons cell
+    const actionCell = row.insertCell();
+    actionCell.className = "text-right whitespace-nowrap px-4";
+    actionCell.style.width = "120px";
+    actionCell.innerHTML = `
+      <button 
+        onclick="event.stopPropagation(); showEditModal(${JSON.stringify(event).replace(/"/g, '&quot;')})" 
+        class="text-blue-600 hover:text-blue-800 font-medium text-sm px-2 py-1 rounded hover:bg-blue-50"
+        title="Edit event">
+        <i class="fas fa-edit"></i>
+      </button>
+      <button 
+        onclick="event.stopPropagation(); showDetailsModal(${JSON.stringify(event).replace(/"/g, '&quot;')})"
+        class="text-gray-600 hover:text-gray-800 font-medium text-sm px-2 py-1 rounded hover:bg-gray-50"
+        title="View details">
+        <i class="fas fa-info-circle"></i>
+      </button>
+    `;
+  });
+}
+
+
+function updateTableColumnVisibility() {
+  renderTable(); 
+}
+
+//==========================================================================================
+//  → FILTERS
+//==========================================================================================
+function addFilter() {
+  const filterId = 'filter-' + Date.now();
+  const filterHtml = `
+    <div id="${filterId}" class="filter-bar-row" style="opacity: 0; transform: translateX(-10px);" role="group" aria-label="Filter criteria">
+      <select class="filter-field" aria-label="Filter field">
+        ${FILTER_FIELDS.map(f => {
+          const fieldName = prettifyFieldName(f);
+          return `<option value="${f}" title="${fieldName.tooltip}">${fieldName.short}</option>`;
+        }).join('')}
+      </select>
+      <select class="filter-operator" aria-label="Filter operator">
+        ${FILTER_OPERATORS.map(op => `<option value="${op}">${op}</option>`).join('')}
+      </select>
+      <input type="text" class="filter-value" 
+        placeholder="Value (comma-separated for IS/IS NOT)" 
+        aria-label="Filter value"
+        autocomplete="off">
+      <button type="button"
+        class="filter-remove-btn" 
+        onclick="removeFilter('${filterId}')"
+        aria-label="Remove filter">
+        <i class="fas fa-times" aria-hidden="true"></i>
+      </button>
+    </div>`;
+  document.getElementById("filtersContainer").insertAdjacentHTML("beforeend", filterHtml);
+  
+  // Animate the new filter row
+  setTimeout(() => {
+    const filterElement = document.getElementById(filterId);
+    filterElement.style.opacity = "1";
+    filterElement.style.transform = "translateX(0)";
+  }, 10);
+  
+  const newFilterElement = document.getElementById(filterId);
+  const inputs = newFilterElement.querySelectorAll("select");
+  const valueInput = newFilterElement.querySelector(".filter-value");
+  
+  // Handle immediate changes from dropdowns
+  inputs.forEach(input => input.addEventListener("change", applyFiltersAndRender));
+  
+  // Debounce text input
+  const debouncedFilterUpdate = debounce(applyFiltersAndRender, 300);
+  valueInput.addEventListener("input", debouncedFilterUpdate);
+  
+  // Add keyboard interaction
+  valueInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      valueInput.blur();
+      applyFiltersAndRender();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      valueInput.value = "";
+      applyFiltersAndRender();
+    }
+  });
+
+  // Update ARIA labels when field changes
+  const fieldSelect = newFilterElement.querySelector(".filter-field");
+  fieldSelect.addEventListener("change", () => {
+    const fieldName = prettifyFieldName(fieldSelect.value);
+    valueInput.setAttribute("aria-label", `Filter value for ${fieldName.short}`);
+    valueInput.setAttribute("placeholder", `Enter ${fieldName.short.toLowerCase()} value...`);
+  });
+
+
+  activeFilters.push({ 
+    id: filterId, 
+    field: newFilterElement.querySelector(".filter-field").value, 
+    operator: newFilterElement.querySelector(".filter-operator").value, 
+    value: "" 
+  });
+  applyFiltersAndRender();
+}
+
+function removeFilter(filterId) {
+  const filterElement = document.getElementById(filterId);
+  if (filterElement) {
+    filterElement.style.opacity = "0";
+    filterElement.style.transform = "translateX(10px)";
+    setTimeout(() => {
+      filterElement.remove();
+      activeFilters = activeFilters.filter(f => f.id !== filterId);
+      applyFiltersAndRender();
+      updateFilterCount();
+    }, 200);
+  }
+}
+
+function updateFilterCount() {
+  const countElement = document.querySelector("#addFilterBtn .filter-count");
+  if (countElement) {
+    const count = activeFilters.length;
+    countElement.textContent = count;
+    countElement.classList.toggle("hidden", count === 0);
+  }
+}
+
+// Debounce helper
+const debounce = (fn, ms) => {
+  let timer;
+  return function(...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), ms);
+  };
+};
+
+function applyFiltersAndRender() {
+  activeFilters = Array.from(document.querySelectorAll("#filtersContainer > div")).map(filterElement => ({
+    id: filterElement.id,
+    field: filterElement.querySelector(".filter-field").value,
+    operator: filterElement.querySelector(".filter-operator").value,
+    value: filterElement.querySelector(".filter-value").value.trim()
+  }));
+  
+  displayedEvents = filterData(eventsData);
+  updateFilterCount();
+  if (sortState.column) {
+    displayedEvents.sort((a, b) => {
+        let valA = a[sortState.column];
+        let valB = b[sortState.column];
+        if (sortState.column === "source_content") {
+            const msgA = a.source_channel && a.message_id ? findCachedMessage(String(a.source_channel), String(a.message_id)) : null;
+            valA = msgA ? (msgA.text || msgA.caption || "") : "";
+            const msgB = b.source_channel && b.message_id ? findCachedMessage(String(b.source_channel), String(b.message_id)) : null;
+            valB = msgB ? (msgB.text || msgB.caption || "") : "";
+        }
+        return compareValues(valA, valB, sortState.column) * sortState.dir;
+    });
+  }
+  renderTableBody(displayedEvents);
+}
+
+
+//==========================================================================================
+//  → INITIALIZATION
+//==========================================================================================
+document.addEventListener("DOMContentLoaded", () => {
+  // console.log("Admin Events page script started."); // This console log is now at the top of the script  // Initialize cacheData for the modal script
+  if (typeof initializeCache === "function") {
+    initializeCache({}); // Pass empty cache data
+  } else {
+    console.warn("initializeCache function not found. Ensure events_edit_modal.js is loaded and defines it.");
+  }
+
+  fetch("{{ url_for('admin_stats_bp.admin_stats_detail') }}")
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(data => {
+      if (data.error) {
+        console.error("Error from server:", data.error);
+        alert("Error fetching events: " + data.error);
+        return;
+      }
+      // Add IDs to events data
+      eventsData = processEventsData(data.events_last_100 || []);
+      
+      if (eventsData.length > 0) {
+        allFields = Object.keys(eventsData[0] || {});
+      } else {
+        // If eventsData is empty, use FILTER_FIELDS as a fallback for allFields
+        // This ensures the column chooser can still be populated even with no data
+        allFields = FILTER_FIELDS.slice(); 
+        console.warn("No events data received, using default fields for column chooser.");
+      }
+      
+      // Initialize or update column order based on potentially new allFields
+      let currentOrder = getColumnOrder();
+      // Add any new fields from allFields to the currentOrder if they don't exist
+      allFields.forEach(field => {
+        if (!currentOrder.includes(field)) {
+          currentOrder.push(field);
+        }
+      });
+      // Remove any fields in currentOrder that are no longer in allFields (optional, depends on desired behavior)
+      currentOrder = currentOrder.filter(field => allFields.includes(field));
+      setColumnOrder(currentOrder);
+
+      // Initialize visible fields, ensuring they are a subset of allFields
+      let visibleFields = getVisibleFields();
+      visibleFields = visibleFields.filter(field => allFields.includes(field));      // If no visible fields are set or valid, default to a subset of allFields or a predefined minimal set
+      if (visibleFields.length === 0 && allFields.length > 0) {
+          // Default visible fields including actions column
+          const defaultVisible = ["timestamp", "event", "source_channel_name", "dest_channel_name", "preview", "actions"];
+          visibleFields = allFields.filter(f => defaultVisible.includes(f));
+          if (visibleFields.length === 0) visibleFields = allFields.slice(0, Math.min(5, allFields.length));
+          if (!visibleFields.includes("actions")) visibleFields.push("actions");
+      }
+      setVisibleFields(visibleFields);      renderTable();
+      updateTableColumnVisibility(); // Ensure columns are correctly shown/hidden
+      
+      // Check for URL parameters to auto-apply filters
+      checkAndApplyURLFilters();
+    })
+    .catch(error => {
+      console.error("Error fetching events data:", error);
+      // Display a user-friendly error message
+      const container = document.getElementById("admin-stats");
+      if (container) {
+        container.innerHTML = `
+          <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+            <strong class="font-bold">Error!</strong>
+            <span class="block sm:inline">Could not load event data. Please try again later.</span>
+            <p class="text-sm mt-1">Details: ${error.message}</p>
+          </div>
+        `;
+      }
+    });
+  document.getElementById("openColumnChooser").addEventListener("click", showColumnChooser);
+  document.getElementById("addFilterBtn").addEventListener("click", addFilter);
+
+  // Set up column chooser modal button event listeners
+  const applyButton = document.getElementById("apply-columns");
+  const cancelButton = document.getElementById("cancel-columns");
+  const resetButton = document.getElementById("reset-columns");
+  
+  if (applyButton) {
+    applyButton.addEventListener("click", applyColumnChangesAndClose);
+  }
+  
+  if (cancelButton) {
+    cancelButton.addEventListener("click", () => {
+      closeModal('column-chooser-modal');
+    });
+  }
+    if (resetButton) {
+    resetButton.addEventListener("click", () => {
+      // Reset to default columns - matches getVisibleFields() default
+      const defaultFields = ["timestamp", "event", "source_channel_name", "dest_channel_name", "message_id", "posting_success", "preview", "actions"];
+      setVisibleFields(defaultFields);
+      
+      // Refresh the column chooser display
+      showColumnChooser();
+    });
+  }
+});
+
+// Function to check URL parameters and apply filters automatically
+function checkAndApplyURLFilters() {
+  const urlParams = new URLSearchParams(window.location.search);
+  
+  // Check for error filter parameter
+  if (urlParams.get('filter_errors') === 'true') {
+    // Add error filter automatically
+    addErrorFilter();
+  }
+}
+
+// Function to add error filter specifically
+function addErrorFilter() {
+  const filterId = 'filter-errors-' + Date.now();
+  const filterHtml = `
+    <div id="${filterId}" class="filter-bar-row" style="opacity: 0; transform: translateX(-10px);" role="group" aria-label="Error filter criteria">
+      <select class="filter-field" aria-label="Filter field">
+        ${FILTER_FIELDS.map(f => {
+          const fieldName = prettifyFieldName(f);
+          const selected = f === 'posting_success' ? 'selected' : '';
+          return `<option value="${f}" title="${fieldName.tooltip}" ${selected}>${fieldName.short}</option>`;
+        }).join('')}
+      </select>
+      <select class="filter-operator" aria-label="Filter operator">
+        ${FILTER_OPERATORS.map(op => {
+          const selected = op === 'IS' ? 'selected' : '';
+          return `<option value="${op}" ${selected}>${op}</option>`;
+        }).join('')}
+      </select>
+      <input type="text" class="filter-value" 
+        value="false"
+        placeholder="Value (comma-separated for IS/IS NOT)" 
+        aria-label="Filter value"
+        autocomplete="off">
+      <button type="button"
+        class="filter-remove-btn" 
+        onclick="removeFilter('${filterId}')"
+        aria-label="Remove filter">
+        <i class="fas fa-times" aria-hidden="true"></i>
+      </button>
+    </div>`;
+  
+  document.getElementById("filtersContainer").insertAdjacentHTML("beforeend", filterHtml);
+  
+  // Animate the new filter row
+  setTimeout(() => {
+    const filterElement = document.getElementById(filterId);
+    if (filterElement) {
+      filterElement.style.opacity = "1";
+      filterElement.style.transform = "translateX(0)";
+    }
+  }, 10);
+  
+  const newFilterElement = document.getElementById(filterId);
+  if (newFilterElement) {
+    const inputs = newFilterElement.querySelectorAll("select");
+    const valueInput = newFilterElement.querySelector(".filter-value");
+    
+    // Handle immediate changes from dropdowns
+    inputs.forEach(input => input.addEventListener("change", applyFiltersAndRender));
+    
+    // Debounce text input
+    const debouncedFilterUpdate = debounce(applyFiltersAndRender, 300);
+    valueInput.addEventListener("input", debouncedFilterUpdate);
+    
+    // Add keyboard interaction
+    valueInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        valueInput.blur();
+        applyFiltersAndRender();
+      }
+    });
+      // Apply the filter immediately
+    setTimeout(() => {
+      applyFiltersAndRender();
+    }, 100);
+  }
+}
+
+// Modal utilities (openModal, closeModal)
+function openModal(id) {
+  const modal = document.getElementById(id);
+  const overlay = document.getElementById(id + "-overlay");
+  if (modal) {
+    modal.style.display = "block";
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+  }
+  if (overlay) {
+    overlay.style.display = "block";
+    overlay.classList.remove("hidden");
+  }
+}
+
+function closeModal(id) {
+  const modal = document.getElementById(id);
+  const overlay = document.getElementById(id + "-overlay");
+  if (modal) {
+    modal.style.display = "none";
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+  }
+  if (overlay) {
+    overlay.style.display = "none";
+    overlay.classList.add("hidden");
+  }
+}
+
+function showEditOrDetails(e, eventId, isEdit = true) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const event = eventsData.find(e => e.id === eventId);
+    if (!event) {
+        console.warn(`Event with ID ${eventId} not found`);
+        return;
+    }
+
+    if (isEdit) {
+        if (typeof showEditModal === 'function') {
+            showEditModal(event);
+        } else {
+            console.error('showEditModal function not found');
+        }
+    } else {
+        if (typeof showDetailsModal === 'function') {
+            showDetailsModal(event);
+        } else {
+            console.error('showDetailsModal function not found');
+        }
+    }
+}
+
+function generateEventId(event) {
+    // Create a unique ID from the event's key properties
+    return `${event.source_channel}-${event.message_id}-${event.timestamp}`.replace(/[^a-zA-Z0-9-]/g, '-');
+}
+
+function processEventsData(events) {
+    return events.map(event => ({
+        ...event,
+        id: generateEventId(event)
+    }));
+}
+
+// Enhanced error handling functions for edit modal
+function populateErrorFields(event) {
+    const errorContainer = document.getElementById('error-container');
+    const apiErrorSection = document.getElementById('api-error-section');
+    const exceptionErrorSection = document.getElementById('exception-error-section');
+    const generalErrorSection = document.getElementById('general-error-section');
+    
+    let hasErrors = false;
+    
+    // Handle API error code
+    if (event.api_error_code) {
+        hasErrors = true;
+        apiErrorSection.classList.remove('hidden');
+        const apiErrorField = document.querySelector('#field-api-error-code span');
+        if (apiErrorField) {
+            apiErrorField.textContent = event.api_error_code;
+        }
+    } else {
+        apiErrorSection.classList.add('hidden');
+    }
+    
+    // Handle exception message
+    if (event.exception_message) {
+        hasErrors = true;
+        exceptionErrorSection.classList.remove('hidden');
+        const exceptionField = document.querySelector('#field-exception-message p');
+        if (exceptionField) {
+            exceptionField.textContent = event.exception_message;
+        }
+    } else {
+        exceptionErrorSection.classList.add('hidden');
+    }
+      // Handle general error (for backwards compatibility)
+    if (!event.api_error_code && !event.exception_message && !event.posting_success) {
+        hasErrors = true;
+        generalErrorSection.classList.remove('hidden');
+        const generalField = document.querySelector('#field-general-error p');
+        if (generalField) {
+            generalField.textContent = 'An error occurred during processing. Check logs for more details.';
+        }
+    } else {
+        generalErrorSection.classList.add('hidden');
+    }
+    
+    // Show/hide main error container
+    if (hasErrors) {
+        errorContainer.classList.remove('hidden');
+    } else {
+        errorContainer.classList.add('hidden');
+    }
+}
+</script>
+{% endblock %}

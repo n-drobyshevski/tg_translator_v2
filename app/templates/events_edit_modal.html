@@ -1,0 +1,334 @@
+{% set body %}
+<form id="event-edit-form" class="space-y-6 p-4">
+    <!-- Message Cards Container -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Source Message Card -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="border-b border-gray-100 bg-gray-50/80 px-6 py-4">
+                <h3 class="flex items-center gap-2 text-lg font-semibold text-gray-900">
+                    <i class="fas fa-paper-plane text-blue-500"></i>
+                    <span>Source Message</span>
+                </h3>
+            </div>
+            <div class="p-6 space-y-4">
+                <!-- Channel Info -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-700" for="field-source_channel">
+                        Channel ID
+                        <span class="text-xs text-gray-500 ml-1">(e.g. -1001234567890)</span>
+                    </label>
+                    <div class="flex items-center space-x-2">
+                        <input type="text" id="field-source_channel" name="source_channel"
+                               class="w-full px-3 py-2 border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-lg font-mono text-sm text-gray-800 transition-colors disabled:bg-gray-50 disabled:cursor-not-allowed" 
+                               data-tooltip="Source Channel ID"
+                               pattern="-?\d{10,}"
+                               title="Channel ID should be a number with at least 10 digits" />
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-sm font-medium text-gray-700" for="field-source_channel_name">
+                            Channel Name
+                        </label>
+                        <input type="text" id="field-source_channel_name" name="source_channel_name"
+                               class="w-full px-3 py-2 border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-lg text-sm text-gray-800 transition-colors disabled:bg-gray-50 disabled:cursor-not-allowed" />
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-sm font-medium text-gray-700" for="field-message_id">
+                            Message ID
+                        </label>
+                        <input type="text" id="field-message_id" name="message_id"
+                               class="w-full px-3 py-2 border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-lg font-mono text-sm text-gray-800 transition-colors disabled:bg-gray-50 disabled:cursor-not-allowed"
+                               pattern="\d+"
+                               title="Message ID should be a positive number" />
+                    </div>
+                </div>
+                
+                <!-- Message Preview -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-700">
+                        Message Content
+                    </label>
+                    <div id="source-message-preview" class="min-h-[120px] max-h-[300px] overflow-y-auto p-4 bg-gray-50 rounded-lg border border-gray-200 text-sm text-gray-800"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Translated Message Card -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="border-b border-gray-100 bg-gray-50/80 px-6 py-4">
+                <h3 class="flex items-center gap-2 text-lg font-semibold text-gray-900">
+                    <i class="fas fa-inbox text-green-500"></i>
+                    <span>Translated Message</span>
+                </h3>
+            </div>
+            <div class="p-6 space-y-4">
+                <!-- Channel Info -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-700" for="field-dest_channel">
+                        Channel ID
+                        <span class="text-xs text-gray-500 ml-1">(e.g. -1001234567890)</span>
+                    </label>
+                    <div class="flex items-center space-x-2">
+                        <input type="text" id="field-dest_channel" name="dest_channel"
+                               class="w-full px-3 py-2 border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-lg font-mono text-sm text-gray-800 transition-colors disabled:bg-gray-50 disabled:cursor-not-allowed"
+                               pattern="-?\d{10,}"
+                               title="Channel ID should be a number with at least 10 digits" />
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-sm font-medium text-gray-700" for="field-dest_channel_name">
+                            Channel Name
+                        </label>
+                        <input type="text" id="field-dest_channel_name" name="dest_channel_name"
+                               class="w-full px-3 py-2 border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-lg text-sm text-gray-800 transition-colors disabled:bg-gray-50 disabled:cursor-not-allowed" />
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-sm font-medium text-gray-700" for="field-dest_message_id">
+                            Message ID
+                        </label>
+                        <input type="text" id="field-dest_message_id" name="dest_message_id"
+                               class="w-full px-3 py-2 border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-lg font-mono text-sm text-gray-800 transition-colors disabled:bg-gray-50 disabled:cursor-not-allowed"
+                               pattern="\d+"
+                               title="Message ID should be a positive number" />
+                    </div>
+                </div>
+                
+                <!-- Message Preview -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-700">
+                        Message Content
+                    </label>
+                    <div id="translated-message-preview" class="min-h-[120px] max-h-[300px] overflow-y-auto p-4 bg-gray-50 rounded-lg border border-gray-200 text-sm text-gray-800"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Status and Metrics Container -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Event Status Card -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="border-b border-gray-100 bg-gray-50/80 px-6 py-4">
+                <h3 class="flex items-center gap-2 text-lg font-semibold text-gray-900">
+                    <i class="fas fa-info-circle text-blue-500"></i>
+                    <span>Event Status</span>
+                </h3>
+            </div>
+            <div class="p-6 space-y-4">
+                <!-- Event Type -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-700" for="field-event">
+                        Event Type
+                    </label>
+                    <input type="text" id="field-event" name="event" readonly
+                           class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800" />
+                </div>
+
+                <!-- Status Indicators -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="space-y-2">
+                        <label class="block text-sm font-medium text-gray-700">Status</label>
+                        <div id="field-status" class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium"></div>
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-sm font-medium text-gray-700">Retry Count</label>
+                        <div id="field-retry-count" class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium"></div>
+                    </div>
+                </div>                <!-- Error Information -->
+                <div class="space-y-4 hidden" id="error-container">
+                    <!-- Error Header with Enhanced Visual Design -->
+                    <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                        <div class="flex items-center gap-3">
+                            <div class="flex-shrink-0">
+                                <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                                    <i class="fas fa-exclamation-triangle text-red-600 text-lg"></i>
+                                </div>
+                            </div>
+                            <div class="flex-1">
+                                <h4 class="text-lg font-semibold text-red-800 mb-1">Error Detected</h4>
+                                <p class="text-sm text-red-600">This event encountered an error during processing. Review the details below for debugging information.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- API Error Code -->
+                    <div class="space-y-3 hidden" id="api-error-section">
+                        <div class="bg-white border border-red-200 rounded-lg overflow-hidden">
+                            <div class="bg-red-50 px-4 py-3 border-b border-red-200">
+                                <h5 class="flex items-center gap-2 text-sm font-semibold text-red-800">
+                                    <i class="fas fa-code text-red-600"></i>
+                                    <span>API Error Code</span>
+                                </h5>
+                            </div>
+                            <div class="p-4">
+                                <div id="field-api-error-code" class="inline-flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-mono bg-red-100 text-red-800 border border-red-300 w-full">
+                                    <i class="fas fa-exclamation-circle text-red-600 flex-shrink-0"></i>
+                                    <span class="font-semibold flex-1"></span>
+                                    <button type="button" 
+                                            class="text-red-600 hover:text-red-800 ml-2"
+                                            onclick="copyToClipboard(this.previousElementSibling.textContent)"
+                                            title="Copy error code">
+                                        <i class="fas fa-copy"></i>
+                                    </button>
+                                </div>
+                                <p class="mt-2 text-xs text-gray-600">This code can help identify the specific API error that occurred.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Exception Message -->
+                    <div class="space-y-3 hidden" id="exception-error-section">
+                        <div class="bg-white border border-red-200 rounded-lg overflow-hidden">
+                            <div class="bg-red-50 px-4 py-3 border-b border-red-200">
+                                <h5 class="flex items-center gap-2 text-sm font-semibold text-red-800">
+                                    <i class="fas fa-bug text-red-600"></i>
+                                    <span>Exception Details</span>
+                                </h5>
+                            </div>
+                            <div class="p-4">
+                                <div id="field-exception-message" class="p-4 bg-red-50 border border-red-300 rounded-lg">
+                                    <div class="flex items-start gap-3">
+                                        <i class="fas fa-exclamation-circle text-red-500 mt-1 flex-shrink-0"></i>
+                                        <div class="min-w-0 flex-1">
+                                            <p class="text-sm text-red-700 break-words font-mono leading-relaxed whitespace-pre-wrap"></p>
+                                        </div>
+                                        <button type="button" 
+                                                class="text-red-600 hover:text-red-800 ml-2 flex-shrink-0"
+                                                onclick="copyToClipboard(this.parentElement.querySelector('p').textContent)"
+                                                title="Copy exception message">
+                                            <i class="fas fa-copy"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <p class="mt-2 text-xs text-gray-600">Full technical details of the exception that occurred during processing.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- General Error Message -->
+                    <div class="space-y-3 hidden" id="general-error-section">
+                        <div class="bg-white border border-red-200 rounded-lg overflow-hidden">
+                            <div class="bg-red-50 px-4 py-3 border-b border-red-200">
+                                <h5 class="flex items-center gap-2 text-sm font-semibold text-red-800">
+                                    <i class="fas fa-exclamation-triangle text-red-600"></i>
+                                    <span>Error Information</span>
+                                </h5>
+                            </div>
+                            <div class="p-4">
+                                <div id="field-general-error" class="p-4 bg-red-50 border border-red-300 rounded-lg">
+                                    <div class="flex items-start gap-3">
+                                        <i class="fas fa-info-circle text-red-500 mt-1 flex-shrink-0"></i>
+                                        <div class="min-w-0 flex-1">
+                                            <p class="text-sm text-red-700 break-words leading-relaxed"></p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <p class="mt-2 text-xs text-gray-600">General error information for this event.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Enhanced Error Actions -->
+                    <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h6 class="text-sm font-medium text-gray-800">Debugging Actions</h6>
+                                <p class="text-xs text-gray-600 mt-1">Use these tools to investigate the error further.</p>
+                            </div>
+                            <div class="flex flex-wrap gap-2" id="error-actions">
+                                <button type="button" 
+                                        class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-100 border border-red-200 rounded-lg hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors"
+                                        onclick="copyErrorToClipboard()">
+                                    <i class="fas fa-copy"></i>
+                                    <span>Copy All Errors</span>
+                                </button>
+                                <button type="button" 
+                                        class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-lg hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                                        onclick="viewErrorInLogs()">
+                                    <i class="fas fa-file-alt"></i>
+                                    <span>View in Logs</span>
+                                </button>
+                                <button type="button" 
+                                        class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-green-700 bg-green-100 border border-green-200 rounded-lg hover:bg-green-200 focus:outline-none focus:ring-2 focus:ring-green-500 transition-colors"
+                                        onclick="showErrorHelp()">
+                                    <i class="fas fa-question-circle"></i>
+                                    <span>Help</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Message Sizes -->
+                <div class="space-y-4" id="size-info">
+                    <label class="block text-sm font-medium text-gray-700">Message Sizes</label>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="p-4 bg-gray-50 rounded-lg">
+                            <dt class="text-sm font-medium text-gray-600">Original</dt>
+                            <dd id="field-original-size" class="mt-1 text-2xl font-semibold text-gray-900"></dd>
+                        </div>
+                        <div class="p-4 bg-gray-50 rounded-lg">
+                            <dt class="text-sm font-medium text-gray-600">Translated</dt>
+                            <dd id="field-translated-size" class="mt-1 text-2xl font-semibold text-gray-900"></dd>
+                        </div>
+                    </div>
+                    
+                    <!-- Size Changes for Edit Events -->
+                    <div class="hidden" id="size-changes">
+                        <div class="flex items-center gap-3 p-4 bg-blue-50 rounded-lg">
+                            <i class="fas fa-exchange-alt text-blue-500"></i>
+                            <div class="flex-1">
+                                <h4 class="text-sm font-medium text-blue-900">Size Change</h4>
+                                <div class="mt-1 flex items-center gap-2">
+                                    <span id="field-previous-size" class="text-sm text-blue-700"></span>
+                                    <i class="fas fa-arrow-right text-blue-400"></i>
+                                    <span id="field-new-size" class="text-sm text-blue-700"></span>
+                                </div>
+                            </div>
+                            <div id="size-change-indicator" class="flex items-center gap-1"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Timing Information Card -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="border-b border-gray-100 bg-gray-50/80 px-6 py-4">
+                <h3 class="flex items-center gap-2 text-lg font-semibold text-gray-900">
+                    <i class="fas fa-clock text-indigo-500"></i>
+                    <span>Timing Information</span>
+                </h3>
+            </div>
+            <div class="p-6 space-y-4">
+                <!-- Timestamps -->
+                <div class="space-y-4">
+                    <div class="space-y-2">
+                        <label class="block text-sm font-medium text-gray-700" for="field-timestamp">
+                            Creation Time
+                        </label>
+                        <input type="datetime-local" id="field-timestamp" name="timestamp" readonly
+                               class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800" />
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-sm font-medium text-gray-700" for="field-edit_timestamp">
+                            Last Edit Time
+                        </label>
+                        <input type="datetime-local" id="field-edit_timestamp" name="edit_timestamp" readonly
+                               class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800" />
+                    </div>
+                </div>
+
+                <!-- Processing Duration -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-700">Processing Duration</label>
+                    <div id="field-process-duration" class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-50 text-blue-700"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+
+<!-- Footer buttons will be added dynamically by JavaScript -->
+<div class="modal-footer bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+</div>
+{% endset %}
+{% from 'components/modal.html' import modal %}

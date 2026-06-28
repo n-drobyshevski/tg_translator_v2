@@ -1,0 +1,33 @@
+{% macro modal(id, title, body, footer=None) %}
+<div id="{{ id }}" class="modal-overlay hidden" role="dialog" aria-labelledby="{{ id }}-title" aria-describedby="{{ id }}-content" aria-modal="true" onclick="handleModalOverlayClick(event, '{{ id }}')">
+    <div class="modal-container" onclick="event.stopPropagation();">
+        <div class="modal-header">
+            <h3 class="modal-title" id="{{ id }}-title">{{ title }}</h3>
+            <button type="button" class="modal-close-btn" onclick="hideModal('{{ id }}')" aria-label="Close modal">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+                    <path d="M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+        </div>
+        
+        <div class="modal-body" id="{{ id }}-content">
+            {% if body is string %}
+                {{ body | safe }}
+            {% else %}
+                {{ body }}
+            {% endif %}
+        </div>
+
+        {% if footer %}
+        <div class="modal-footer">
+            {% if footer is string %}
+                {{ footer | safe }}
+            {% else %}
+                {{ footer }}
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endmacro %}

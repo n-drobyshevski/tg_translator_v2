@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Admin Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* Ensure base font size */
+      html { font-size: 16px; }
+      
+      /* Prevent iOS zoom on input focus */
+      @media screen and (-webkit-min-device-pixel-ratio: 0) { 
+        select, textarea, input {
+          font-size: 16px !important;
+        }
+      }
+
+      /* Custom focus styles for better visibility */
+      input:focus {
+        outline: 2px solid #2563eb !important;
+        outline-offset: 2px !important;
+      }
+
+      /* Improve touch target sizes */
+      @media (max-width: 640px) {
+        button, input {
+          min-height: 48px !important;
+        }
+      }
+    </style>
+  </head>  <body class="bg-gray-100 min-h-screen antialiased">
+    <div class="flex min-h-screen items-center justify-center px-4 py-6 sm:px-6 lg:px-8">
+      <div class="w-full max-w-md space-y-8 rounded-xl bg-white p-6 shadow-lg sm:p-8">
+        <div>
+          <h2 class="text-center text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">Admin Login</h2>
+        </div>
+        
+        {# display flash messages #}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, msg in messages %}
+              <div role="alert" 
+                   class="{% if category=='error' %}bg-red-100 border-red-400 text-red-700{% elif category=='success' %}bg-green-100 border-green-400 text-green-700{% else %}bg-blue-100 border-blue-400 text-blue-700{% endif %} px-4 py-3 rounded-lg border text-sm sm:text-base">
+                {{ msg }}
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <form method="POST" 
+              class="mt-8 space-y-6" 
+              action="{{ url_for('login', next=request.args.get('next')) }}"
+              autocomplete="off">
+          <div class="space-y-4">
+            <div>
+              <label for="password" class="block text-sm font-medium text-gray-700 sm:text-base">
+                Password
+              </label>
+              <div class="relative mt-2">
+                <input type="password" 
+                       name="password" 
+                       id="password" 
+                       required
+                       autocomplete="current-password"
+                       aria-label="Enter your password"
+                       class="block w-full appearance-none rounded-lg border border-gray-300 px-4 py-3 text-base placeholder-gray-400 shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-500/20" />
+                <button type="button" 
+                        onclick="togglePasswordVisibility()"
+                        class="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-gray-400 hover:text-gray-600"
+                        aria-label="Toggle password visibility">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path id="eyeIcon" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path id="eyeOutline" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <button type="submit" 
+                  class="flex w-full justify-center rounded-lg bg-blue-600 px-4 py-3 text-base font-semibold text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-500/20 active:bg-blue-800 sm:text-lg">
+            Login
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <script>
+      function togglePasswordVisibility() {
+        const input = document.getElementById('password');
+        input.type = input.type === 'password' ? 'text' : 'password';
+      }
+    </script>
+  </body>
+</html>

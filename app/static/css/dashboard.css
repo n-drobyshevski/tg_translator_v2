@@ -1,0 +1,567 @@
+/* Base font settings */
+:root {
+  --font-roboto: 'Roboto', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body {
+  font-family: var(--font-roboto);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Typography classes */
+.page-title {
+  font-family: var(--font-roboto);
+  font-size: 1.125rem;
+  font-weight: 500;
+  color: #111827;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* KPI and Stats typography */
+.stats-value {
+  font-family: var(--font-roboto);
+  font-weight: 600;
+}
+
+.stats-label {
+  font-family: var(--font-roboto);
+  font-weight: 400;
+}
+
+/* Chart and tooltip styles */
+.chartjs-tooltip-heatmap {
+  font-family: var(--font-roboto);
+  pointer-events: none;
+  position: absolute;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  padding: 10px 14px;
+  color: #1f2937;
+  font-size: 13px;
+  min-width: 120px;
+  max-width: 180px;
+  z-index: 1000;
+  border: 1px solid #e5e7eb;
+  transition: opacity 0.15s;
+  line-height: 1.32;
+  white-space: nowrap;
+}
+
+.chartjs-tooltip-heatmap strong { 
+  font-weight: bold; 
+}
+
+.chartjs-tooltip-heatmap ul {
+  margin: 0;
+  padding: 0 0 0 8px;
+  list-style: none;
+}
+
+.chartjs-tooltip-heatmap li {
+  margin: 0 0 2px 0;
+  font-size: 13px;
+}
+
+.chartjs-tooltip-heatmap .fail { 
+  color: #ef4444; 
+}
+
+.chartjs-tooltip-heatmap .success { 
+  color: #10b981; 
+}
+
+/* Enhanced tooltip styles */
+.chartjs-tooltip {
+  --arrow-size: 6px;
+  --tooltip-bg: rgba(255, 255, 255, 0.98);
+  --tooltip-border: rgba(226, 232, 240, 0.8);
+  --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.08),
+                    0 2px 4px rgba(0, 0, 0, 0.05);
+  
+  opacity: 0;
+  position: absolute;
+  background: var(--tooltip-bg);
+  border-radius: 8px;
+  color: #1f2937;
+  font-family: var(--font-roboto);
+  font-size: 12px;
+  padding: 10px 14px;
+  pointer-events: none;
+  transform-origin: 50% 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 1000;
+  box-shadow: var(--tooltip-shadow);
+  border: 1px solid var(--tooltip-border);
+  backdrop-filter: blur(4px);
+  min-width: 120px;
+  max-width: 200px;
+}
+
+.chartjs-tooltip.active {
+  opacity: 1;
+}
+
+/* Tooltip arrow styles */
+.chartjs-tooltip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  border: var(--arrow-size) solid transparent;
+  pointer-events: none;
+}
+
+.chartjs-tooltip.above {
+  transform: translate(-50%, calc(-100% - var(--arrow-size)));
+}
+
+.chartjs-tooltip.above::after {
+  top: 100%;
+  transform: translateX(-50%);
+  border-top-color: var(--tooltip-bg);
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.05));
+}
+
+.chartjs-tooltip.below {
+  transform: translate(-50%, var(--arrow-size));
+}
+
+.chartjs-tooltip.below::after {
+  bottom: 100%;
+  transform: translateX(-50%);
+  border-bottom-color: var(--tooltip-bg);
+  filter: drop-shadow(0 -1px 1px rgba(0, 0, 0, 0.05));
+}
+
+/* Tooltip header */
+.tooltip-header {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--tooltip-border);
+}
+
+.tooltip-title {
+  font-weight: 500;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* Tooltip body */
+.tooltip-body {
+  font-size: 12px;
+}
+
+.tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+/* Tooltip color indicators */
+.chartjs-tooltip-key {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.chartjs-tooltip-value {
+  font-weight: 500;
+  color: #2563eb;
+  margin-left: auto;
+}
+
+/* Custom styles for horizontal slider */
+.noUi-target {
+  height: 6px;
+  border: none;
+  background: rgba(226, 232, 240, 0.6);
+  box-shadow: none;
+  margin: 0 4px;
+}
+
+.noUi-connect {
+  background: #3b82f6;
+  box-shadow: 0 1px 2px rgba(59, 130, 246, 0.15);
+}
+
+.noUi-horizontal .noUi-handle {
+  width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  right: -8px;
+  top: -5px;
+  border: 2px solid #3b82f6;
+  background: white;
+  box-shadow: 
+    0 1px 3px rgba(0, 0, 0, 0.1),
+    0 0 0 1px rgba(59, 130, 246, 0.1);
+  transition: all 0.2s ease;
+}
+
+.noUi-handle:hover {
+  transform: scale(1.1);
+  box-shadow: 
+    0 2px 4px rgba(0, 0, 0, 0.1),
+    0 0 0 1px rgba(59, 130, 246, 0.2);
+}
+
+.noUi-handle:active {
+  transform: scale(0.95);
+  background: #f8fafc;
+}
+
+.noUi-handle:before,
+.noUi-handle:after {
+  display: none;
+}
+
+.noUi-handle:hover {
+  cursor: pointer;
+}
+
+/* Time range value styles */
+#timeRangeValue {
+  min-width: 1.5rem;
+  text-align: center;
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom scrollbar styles */
+.chart-scroll::-webkit-scrollbar {
+  height: 6px;
+  background: transparent;
+}
+
+.chart-scroll::-webkit-scrollbar-thumb {
+  background: rgba(203, 213, 225, 0);
+  border-radius: 3px;
+  transition: background-color 0.2s;
+}
+
+.chart-scroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(203, 213, 225, 0.8);
+}
+
+.chart-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.chart-scroll:hover {
+  scrollbar-color: rgba(203, 213, 225, 0.8) transparent;
+}
+
+/* Hide scrollbar if content fits */
+.chart-scroll.fit-content {
+  scrollbar-width: none;
+}
+
+.chart-scroll.fit-content::-webkit-scrollbar {
+  display: none;
+}
+
+/* Custom checkbox styles */
+.custom-checkbox {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.custom-checkbox:focus-within {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+.custom-checkbox input {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 18px;
+  width: 18px;
+  margin: 0;
+  z-index: 1;
+}
+
+.custom-checkbox input:disabled {
+  cursor: not-allowed;
+}
+
+.custom-checkbox:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.checkmark {
+  height: 18px;
+  width: 18px;
+  background-color: #fff;
+  border: 2px solid #e5e7eb;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.custom-checkbox:hover:not(:has(input:disabled)) .checkmark {
+  border-color: #3b82f6;
+  background-color: #f8fafc;
+  transform: scale(1.05);
+}
+
+.custom-checkbox input:checked ~ .checkmark {
+  background-color: #3b82f6;
+  border-color: #3b82f6;
+}
+
+.custom-checkbox input:focus ~ .checkmark {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.checkmark:after {
+  content: '';
+  position: absolute;
+  opacity: 0;
+  transform: scale(0);
+  transition: all 0.2s ease;
+}
+
+.custom-checkbox input:checked ~ .checkmark:after {
+  opacity: 1;
+  transform: scale(1);
+  content: '✓';
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
+  line-height: 1;
+}
+
+/* Chart card styles */
+.bg-white {
+  background-color: #ffffff;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.bg-white:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+/* Chart card enhanced styles */
+.chart-card {
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  box-shadow: 
+    0 1px 3px 0 rgba(0, 0, 0, 0.1),
+    0 1px 2px -1px rgba(0, 0, 0, 0.1),
+    0 0 0 1px rgba(226, 232, 240, 0.4);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  isolation: isolate;
+}
+
+.chart-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.8) 0%, rgba(249, 250, 251, 0.9) 100%);
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.chart-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 
+    0 8px 16px -6px rgba(15, 23, 42, 0.08),
+    0 2px 8px -2px rgba(15, 23, 42, 0.04),
+    0 0 0 1px rgba(148, 163, 184, 0.2);
+}
+
+.chart-card:hover::before {
+  opacity: 1;
+}
+
+/* KPI card specific styles */
+.chart-card {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.9) 0%,
+    rgba(249, 250, 251, 0.9) 100%
+  );
+}
+
+.chart-card .icon-container {
+  position: relative;
+  transition: transform 0.2s ease;
+}
+
+.chart-card:hover .icon-container {
+  transform: scale(1.05);
+}
+
+.stats-value {
+  position: relative;
+  z-index: 1;
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chart header styles */
+.chart-header {
+  position: relative;
+  padding-bottom: 0.75rem;
+  gap: 0.75rem;
+}
+
+.chart-header h2 {
+  flex: 1;
+  min-width: 0;
+}
+
+.chart-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, 
+    rgba(226, 232, 240, 0.6) 0%, 
+    rgba(226, 232, 240, 0.1) 100%
+  );
+}
+
+/* Chart badge styles */
+.chart-badge {
+  background: rgba(241, 245, 249, 0.8);
+  border: 1px solid rgba(226, 232, 240, 0.6);
+  backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  width: auto;
+  max-width: max-content;
+  flex-shrink: 0;
+}
+
+.chart-badge:hover {
+  background: rgba(241, 245, 249, 0.95);
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+/* Time range picker styles */
+.time-range-picker {
+  width: 100%;
+  transition: background-color 0.2s ease;
+}
+
+.time-range-picker:hover {
+  background-color: #f3f4f6;
+}
+
+/* Chart container aspect ratio preservation */
+/* Chart aspect ratio */
+.chart-aspect-4-3 {
+  aspect-ratio: 4/3;
+  max-height: 100%;
+}
+
+/* Chart sizing and proportions */
+.chart-container {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
+
+canvas {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain;
+}
+
+/* Mobile optimizations */
+@media (max-width: 640px) {
+  .chart-card {
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  }
+
+  .chart-badge {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .stats-value {
+    font-size: 1.125rem;
+  }
+
+  .noUi-target {
+    height: 4px;
+  }
+
+  .noUi-horizontal .noUi-handle {
+    width: 14px;
+    height: 14px;
+    top: -5px;
+  }
+
+  .time-range-picker {
+    padding: 0.75rem;
+  }
+  
+  #horizontal-slider {
+    min-width: 140px;
+  }
+  
+  .noUi-touch-area {
+    min-height: 28px;
+    margin-top: -12px;
+  }
+
+  .chartjs-tooltip {
+    font-size: 11px;
+    padding: 8px 12px;
+    min-width: 100px;
+  }
+  
+  .tooltip-title {
+    font-size: 12px;
+  }
+  
+  .tooltip-body {
+    font-size: 11px;
+  }
+  
+  .chartjs-tooltip-key {
+    width: 6px;
+    height: 6px;
+  }
+}
+
+/* Tablet optimizations */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .chart-card {
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+  }
+}
+
+/* Chart tooltip responsiveness */
+.chartjs-tooltip-heatmap {
+  max-width: min(180px, 90vw);
+  font-size: clamp(11px, 2.5vw, 13px);
+}

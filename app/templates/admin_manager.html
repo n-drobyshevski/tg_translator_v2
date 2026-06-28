@@ -1,0 +1,1302 @@
+{% extends "base.html" %}
+
+{% block title %}Message Manager{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin_manager.css') }}" />
+<script src="{{ url_for('static', filename='js/source_message_edit_modal.js') }}"></script>
+{% endblock %}
+{% block header %}
+<div class="flex items-center w-full">
+  <h1 class="page-title">
+    <span>Message Manager</span>
+  </h1>
+</div>
+{% endblock %}
+{% block content %}
+
+  </head>
+  <body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto mt-10 px-4 sm:px-6 lg:px-10 max-w-6xl">
+          <!-- Step 1: Select Source Channel -->
+      <div class="section-panel">
+        <div class="step-title">
+          <i class="fa-solid fa-filter"></i> 1. Select Source Channel
+        </div>
+        <form method="post">
+          <div class="message-select-container">
+            <div class="message-select-left">
+              <select id="source_channel" name="source_channel" required class="message-select">
+                <option value="">-- Select a channel --</option>
+                {% for ch in channels %}
+                <option value="{{ ch.id }}" {% if selected_channel_id == ch.id %}selected{% endif %}>
+                  {{ ch.name |e }} ({{ ch.id }}){% if ch.is_en %} [EN]{% endif %}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="message-select-right">
+              <div class="action-buttons-compact">
+                <button type="submit" class="action-button-compact custom-btn-blue">
+                  <i class="fa-solid fa-arrow-down-to-bracket fa-sm"></i> Select Channel
+                </button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <!-- Step 2: Choose Existing or Custom Message -->
+      {% if selected_channel_id %}
+      <div class="section-panel">
+        <div class="step-title">
+          <i class="fa-regular fa-envelope-open"></i> 2. Choose Message Source
+        </div>
+        
+        <!-- Source Selection Tabs -->
+        <div class="source-tabs">
+          <div class="source-tab {% if not message_option or message_option == 'existing' %}active{% endif %}" 
+               onclick="toggleMessageOption('existing')">
+            <i class="fa-solid fa-list fa-sm"></i> Existing Message
+          </div>
+          <div class="source-tab {% if message_option == 'custom' %}active{% endif %}" 
+               onclick="toggleMessageOption('custom')">
+            <i class="fa-solid fa-pen fa-sm"></i> Custom Message
+          </div>
+        </div>
+
+        <!-- Existing Message Section -->
+        <div id="existing-message-section" class="{% if message_option == 'custom' %}hidden{% endif %}">          <form method="post" id="message-form" onsubmit="return validateTranslationForm(event)">
+            <input type="hidden" name="source_channel" value="{{ selected_channel_id }}" />
+            <input type="hidden" name="message_option" value="existing" />
+            <div class="message-select-container">
+              <div class="message-select-left">
+                <select name="message_id" id="message_id" class="message-select" onchange="updatePreviewContent()">
+                  <option value="">Select a message</option>                  {% for msg in recent_messages %}
+                  <option value="{{ msg.id }}" data-full="{{ msg.html|e }}" {% if msg.id|string == selected_message_id|string %}selected{% endif %}>
+                    {% if msg.timestamp %}<span class="message-timestamp">{{ msg.timestamp.strftime('%H:%M %d-%m-%y') }}</span> │ {% endif %}{{ msg.html|striptags|truncate(100) }}
+                  </option>
+                  {% endfor %}
+                </select>
+                <div id="preview-content" class="message-preview-compact"></div>
+              </div>
+              <div class="message-select-right">
+                <div class="action-buttons-compact">
+                  <button type="submit" name="action" value="translate" class="action-button-compact custom-btn-blue" id="translate_btn" onclick="showSpinner('Translating... Please wait.')">
+                    <i class="fa-solid fa-language fa-sm"></i> Translate
+                  </button>
+                  <button type="submit" name="action" value="delete" class="action-button-compact custom-btn-red" onclick="return confirm('Are you sure you want to delete this message?')">
+                    <i class="fa-solid fa-trash fa-sm"></i> Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <!-- Custom Message Section -->
+        <div id="custom-message-section" class="{% if message_option != 'custom' %}hidden{% endif %}">
+          <form method="post" id="custom-message-form" class="space-y-3">
+            <input type="hidden" name="source_channel" value="{{ selected_channel_id }}" />
+            <input type="hidden" name="message_option" value="custom" />
+            <input type="hidden" name="custom_message_text" id="hidden_message_text" />
+            
+            <div class="bg-white rounded-lg border border-gray-200 p-4">
+              <!-- Editor Toolbar -->
+              <div class="flex flex-wrap gap-4 mb-3 p-2 bg-gray-50 rounded border">
+                <button type="button" onclick="formatText('bold')" class="editor-btn" title="Bold">
+                  <i class="fas fa-bold"></i>
+                </button>
+                <button type="button" onclick="formatText('italic')" class="editor-btn" title="Italic">
+                  <i class="fas fa-italic"></i>
+                </button>
+                <button type="button" onclick="formatText('code')" class="editor-btn" title="Code">
+                  <i class="fas fa-code"></i>
+                </button>
+                <button type="button" onclick="insertLink()" class="editor-btn" title="Insert Link">
+                  <i class="fas fa-link"></i>
+                </button>
+                <div class="w-px h-6 bg-gray-300 mx-1"></div>
+                <button type="button" onclick="clearFormatting()" class="editor-btn" title="Clear Formatting">
+                  <i class="fas fa-remove-format"></i>
+                </button>
+              </div>
+
+              <!-- Editor Area -->
+              <div class="space-y-3">
+                <div class="flex-1">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">Editor</label>
+                  <div id="editor" contenteditable="true" 
+                       class="w-full min-h-[200px] p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                       onkeyup="updatePreview()" onpaste="handlePaste(event)">{{ custom_message_text|safe }}</div>
+                </div>
+                
+                <!-- Preview Area -->
+                <div class="flex-1">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">Preview</label>
+                  <div id="preview" 
+                       class="w-full min-h-[200px] p-3 border rounded-lg bg-gray-50 text-sm text-gray-800">
+                    {{ custom_message_text|safe }}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap gap-2 mt-4">
+              <button type="button" onclick="submitForm()" id="translate_custom_btn"
+                class="custom-btn custom-btn-green">
+                <i class="fa-regular fa-paper-plane"></i>Translate Custom
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Translation Result & Source Edit -->
+      {% if translation_result %}
+      <div class="section-panel">
+        <div class="step-title"><i class="fa-solid fa-language"></i> 3. Translation Result</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">          <!-- Source Message Column -->
+          <div class="flex flex-col">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-semibold text-lg text-blue-800">Source Message</h4>
+              <div class="flex items-center gap-2">
+                <button type="button" id="editSourceBtn"
+                  class="text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-md text-sm flex items-center gap-2 transition-colors"
+                  onclick="toggleSourceEditMode()">
+                  <i class="fas fa-edit fa-sm"></i>
+                  <span>Edit</span>
+                </button>
+              </div>
+            </div>
+            <div id="source-edit-area" class="hidden">
+              <div class="bg-white rounded-lg border border-blue-200 shadow-sm mb-4">
+                <div class="flex items-center justify-between p-3 border-b border-blue-100 bg-blue-50">
+                  <span class="font-medium text-blue-800">Edit Source Message</span>
+                  <button type="button" onclick="cancelSourceEdit()" class="text-gray-500 hover:text-gray-700">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </div>
+                <div class="p-4">
+                  <!-- Custom Editor Container - Reusing existing custom editor -->
+                  <div class="space-y-4">
+                    <!-- Editor Toolbar -->
+                    <div class="flex flex-wrap gap-4 mb-3 p-2 bg-gray-50 rounded border">
+                      <button type="button" onclick="formatSourceText('bold')" class="editor-btn" title="Bold">
+                        <i class="fas fa-bold"></i>
+                      </button>
+                      <button type="button" onclick="formatSourceText('italic')" class="editor-btn" title="Italic">
+                        <i class="fas fa-italic"></i>
+                      </button>
+                      <button type="button" onclick="formatSourceText('code')" class="editor-btn" title="Code">
+                        <i class="fas fa-code"></i>
+                      </button>
+                      <button type="button" onclick="insertSourceLink()" class="editor-btn" title="Insert Link">
+                        <i class="fas fa-link"></i>
+                      </button>
+                      <div class="w-px h-6 bg-gray-300 mx-1"></div>
+                      <button type="button" onclick="clearSourceFormatting()" class="editor-btn" title="Clear Formatting">
+                        <i class="fas fa-remove-format"></i>
+                      </button>
+                    </div>
+
+                    <!-- Editor Area -->
+                    <div class="space-y-3">
+                      <div class="flex-1">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Source Editor</label>
+                        <div id="source-editor" contenteditable="true" 
+                             class="w-full min-h-[200px] p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                             onkeyup="updateSourcePreview()" onpaste="handleSourcePaste(event)"></div>
+                      </div>
+                    </div>
+                    
+                    <!-- Character count and stats -->
+                    <div class="flex items-center justify-between text-xs text-gray-500">
+                      <span id="source-edit-char-count">0 characters</span>
+                      <span class="text-blue-600">Press Ctrl+S to save quickly</span>
+                    </div>
+                  </div>
+                  
+                  <div class="flex justify-end space-x-3 mt-4">
+                    <button type="button"
+                      class="custom-btn custom-btn-gray text-sm"
+                      onclick="cancelSourceEdit()">
+                      <i class="fas fa-times fa-sm"></i>
+                      Cancel
+                    </button>
+                    <button type="button"
+                      class="custom-btn custom-btn-green text-sm"
+                      onclick="saveSourceEdit()">
+                      <i class="fas fa-save fa-sm"></i>
+                      Save & Translate
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>            <div class="preview-container">
+              <div id="source-message-block"
+                  class="border-l-4 border-blue-200 bg-gray-50 rounded-lg p-4 text-sm text-gray-800 message-preview expanded"
+                  style="white-space: pre-line;">
+                <span id="source-message-content">
+                  {{ selected_message_text|trim|safe }}
+                </span>
+              </div>
+              <div id="raw-html-source"
+                class="raw-html-view border border-blue-200 bg-gray-50 rounded-lg p-4 mb-4 text-xs font-mono text-gray-700 overflow-x-auto"
+                style="white-space: pre-line; display: none;">
+                <pre class="m-0">{{ selected_message_text|e }}</pre>
+              </div>
+            </div>
+          </div>          <!-- Translated Message Column -->
+          <div class="flex flex-col">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-semibold text-lg text-blue-800">Translation Result</h4>
+              <button id="toggleRawHtmlBtn" type="button"
+                class="raw-html-toggle"
+                role="switch"
+                aria-checked="false"
+                aria-label="Toggle raw HTML view">
+                <i class="fas fa-code icon"></i>
+                <span>Show Raw HTML</span>
+                <span class="shortcut">Alt+H</span>
+              </button>
+            </div>
+            <div class="preview-container">
+              <div id="translated-message-block"
+                  class="border-l-4 border-blue-200 bg-gray-50 rounded-lg p-4 text-sm text-gray-800 message-preview expanded">
+                <div class="mt-2" style="white-space: pre-line;">
+                  {{ raw_html_result|safe }}
+                </div>
+              </div>
+              <div id="raw-html-content"
+                class="raw-html-view border border-blue-200 bg-gray-50 rounded-lg p-4 mb-4 text-xs font-mono text-gray-700 overflow-x-auto"
+                style="white-space: pre-line; display: none;">
+                <pre class="m-0">{{ raw_html_result|e }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}      <!-- Step 3: Select Target Channel & Post -->
+      {% if translation_result %}
+      <div class="section-panel">
+        <div class="step-title">
+          <i class="fa-solid fa-share-nodes"></i> 4. Post Translation
+        </div>
+        <form method="post" action="/admin/manager" id="translationForm" onsubmit="updateTargetChannelId()">
+          <!-- Hidden inputs -->
+          <input type="hidden" name="source_channel" value="{{ selected_channel_id }}" />
+          <input type="hidden" id="translation_message_id" name="message_id" value="{{ selected_message_id }}" />
+          <input type="hidden" name="action" id="translation-action" value="" />
+          <input type="hidden" name="target_channel_id" id="target_channel_id" value="" />
+          <input type="hidden" name="translation_result" value="{{ translation_result|e }}" />
+          <input type="hidden" name="raw_html_result" value="{{ raw_html_result|e }}" />
+
+          <!-- Target Channel Selection -->
+          <div class="target-channel-section">
+            <div class="target-channel-label">Target channel:</div>
+            <div class="target-channel-select-wrapper">
+              <select id="target_channel" name="target_channel" required
+                      class="target-channel-select"
+                      onchange="updateTargetChannelId()"
+                      aria-label="Select target channel">
+                {% for ch in target_channels %}
+                <option value="{{ ch.type }}" data-channel-id="{{ ch.id }}"
+                  {% if selected_target_type == ch.type %}selected{% endif %}>
+                  {{ ch.name |e }}
+                </option>
+                {% endfor %}
+              </select>
+              <i class="fas fa-chevron-down target-channel-select-icon"></i>
+            </div>
+
+            <!-- Edit Mode Toggle -->
+            <div class="edit-mode-toggle">
+              <input type="checkbox" name="edit_mode" id="edit_mode"
+                     role="switch"
+                     aria-label="Edit last message instead of posting new"
+                     checked />
+              <label for="edit_mode">
+                Edit last message
+              </label>
+            </div>
+          </div>
+
+          <!-- Post Button -->
+          <div class="flex items-center justify-between">
+            <button type="button" id="postBtn"
+                    class="post-button"
+                    aria-label="Post translation">
+              <i class="fa-solid fa-paper-plane"></i>
+              <span>Post Translation</span>
+            </button>
+          </div>
+        </form>
+
+        <!-- Post Result Messages -->
+        {% if post_result %}
+        <div id="postResultBox" class="post-result success" role="alert">
+          <i class="fas fa-check-circle"></i>
+          <span>{{ post_result }}</span>
+        </div>
+        {% endif %}
+        
+        {% if delete_result %}
+        <div class="post-result warning" role="alert">
+          <i class="fas fa-exclamation-triangle"></i>
+          <span>{{ delete_result }}</span>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    {% set spinner_text = "Processing... Please wait." %}
+    {% include 'components/spinner_loader.html' %}
+    <div class="h-16"></div>
+    <!-- Post Confirmation Dialog -->
+    <div id="postDialog"
+      class="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50 hidden">
+      <div id="postDialogBox"
+        class="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm">
+        <div class="text-lg font-semibold mb-4 text-gray-800">Confirm Post</div>
+        <div class="mb-6 text-gray-700">
+          Are you sure you want to post the translation?
+        </div>
+        <div class="flex justify-end gap-2">
+          <button type="button" id="cancelPostDialog"
+            class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition text-sm">
+            Cancel
+          </button>
+          <button name="action" value="post" type="button" id="confirmPostDialog"
+            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm">
+            Post
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Sync hidden input 'target_channel_id' with selection
+      function updateTargetChannelId() {
+        const sel = document.getElementById('target_channel');
+        if (!sel) return;
+        document.getElementById('target_channel_id').value =
+          sel.options[sel.selectedIndex].getAttribute('data-channel-id') || '';
+      }
+      // Toggle preview display
+      function togglePreview() {
+        const preview = document.getElementById('preview-area');
+        if (!preview) return;
+        if (preview.classList.contains('hidden')) {
+          updatePreviewContent();
+          preview.classList.remove('hidden');
+        } else {
+          preview.classList.add('hidden');
+        }
+      }
+      function updatePreviewContent() {
+        const select = document.getElementById('message_id');
+        const preview = document.getElementById('preview-content');
+        if (!select || !preview) return;
+        
+        const selected = select.options[select.selectedIndex];
+        const content = selected.getAttribute('data-full') || '';
+        preview.innerHTML = content;
+      }
+      // Message source toggling
+      function toggleMessageOption(option) {
+        const existingSection = document.getElementById('existing-message-section');
+        const customSection = document.getElementById('custom-message-section');
+        const existingTab = document.querySelector('.source-tab:first-child');
+        const customTab = document.querySelector('.source-tab:last-child');
+        
+        if (option === 'existing') {
+          existingSection.classList.remove('hidden');
+          customSection.classList.add('hidden');
+          existingTab.classList.add('active');
+          customTab.classList.remove('active');
+        } else {
+          existingSection.classList.add('hidden');
+          customSection.classList.remove('hidden');
+          existingTab.classList.remove('active');
+          customTab.classList.add('active');
+        }
+      }
+
+      // Initialize preview on page load
+      document.addEventListener('DOMContentLoaded', () => {
+        console.log('DOM loaded, initializing preview...');
+        updatePreviewContent();
+        
+        // Also initialize custom editor if visible
+        const customSection = document.getElementById('custom-message-section');
+        if (customSection && !customSection.classList.contains('hidden')) {
+          console.log('Custom section is visible, updating preview...');
+          updatePreview();
+        }
+        
+        // Add event listener to editor for content changes
+        const editor = document.getElementById('editor');
+        if (editor) {
+          // Initialize with existing content
+          updatePreview();
+          
+          // Listen for input events
+          editor.addEventListener('input', updatePreview);
+          console.log('Editor event listeners added');
+        }
+      });      function toggleSourceEditMode() {
+        const editArea = document.getElementById('source-edit-area');
+        const messageBlock = document.getElementById('source-message-block');
+        const rawHtmlSource = document.getElementById('raw-html-source');
+        const editBtn = document.getElementById('editSourceBtn');
+        const translatedMessageBlock = document.getElementById('translated-message-block');
+        const rawHtmlContent = document.getElementById('raw-html-content');
+        
+        if (editArea && messageBlock && editBtn) {
+          const isEditing = editArea.classList.contains('hidden');
+          
+          if (isEditing) {
+            // Enter edit mode - hide preview, show editor
+            editArea.classList.remove('hidden');
+            messageBlock.classList.add('hidden');
+            if (rawHtmlSource) rawHtmlSource.classList.add('hidden');
+            
+            // Hide translation result preview when editing source
+            if (translatedMessageBlock) translatedMessageBlock.classList.add('hidden');
+            if (rawHtmlContent) rawHtmlContent.classList.add('hidden');
+            
+            // Update button text
+            editBtn.innerHTML = '<i class="fas fa-times fa-sm"></i> Cancel';
+            
+            // Initialize editor when entering edit mode
+            initializeSourceEditor();
+            const sourceEditor = document.getElementById('source-editor');
+            if (sourceEditor) {
+              sourceEditor.focus();
+              // Move cursor to end
+              const range = document.createRange();
+              const sel = window.getSelection();
+              range.selectNodeContents(sourceEditor);
+              range.collapse(false);
+              sel.removeAllRanges();
+              sel.addRange(range);
+            }
+          } else {
+            // Exit edit mode - show preview, hide editor
+            editArea.classList.add('hidden');
+            messageBlock.classList.remove('hidden');
+            if (rawHtmlSource) rawHtmlSource.classList.add('hidden');
+            
+            // Restore translation result preview when exiting edit mode
+            if (translatedMessageBlock) translatedMessageBlock.classList.remove('hidden');
+            
+            // Update button text
+            editBtn.innerHTML = '<i class="fas fa-edit fa-sm"></i> Edit';
+          }
+        }
+      }      function saveSourceEdit() {
+        const sourceEditor = document.getElementById('source-editor');
+        const messageBlock = document.getElementById('source-message-block');
+        const editArea = document.getElementById('source-edit-area');
+        const rawHtmlSource = document.getElementById('raw-html-source');
+        const translatedMessageBlock = document.getElementById('translated-message-block');
+        const rawHtmlContent = document.getElementById('raw-html-content');
+        
+        if (sourceEditor && messageBlock) {
+          const content = sourceEditor.innerHTML;
+          
+          // Update the preview content
+          document.getElementById('source-message-content').innerHTML = content;
+          
+          // Update raw HTML if it exists
+          if (rawHtmlSource && rawHtmlSource.querySelector('pre')) {
+            rawHtmlSource.querySelector('pre').textContent = content;
+          }
+          
+          // Hide editor and show preview
+          if (editArea) editArea.classList.add('hidden');
+          messageBlock.classList.remove('hidden');
+          if (rawHtmlSource) rawHtmlSource.classList.add('hidden');
+          
+          // Show loading state in translation preview while translating
+          if (translatedMessageBlock) {
+            translatedMessageBlock.classList.remove('hidden');
+            translatedMessageBlock.innerHTML = '<div class="text-gray-500 italic p-4">Translating...</div>';
+          }
+          if (rawHtmlContent) rawHtmlContent.classList.add('hidden');
+          
+          // Reset edit button
+          const editBtn = document.getElementById('editSourceBtn');
+          if (editBtn) {
+            editBtn.innerHTML = '<i class="fas fa-edit fa-sm"></i> Edit';
+          }
+          
+          // Submit form for translation
+          submitSourceEdit(content);
+        }
+      }      function submitSourceEdit(content) {
+        logPostOperation('submitSourceEdit', {
+          messageId: document.getElementById('message_id')?.value,
+          sourceChannel: document.getElementById('source_channel')?.value,
+          contentLength: content?.length,
+          action: 'translate'
+        });
+
+        const messageIdElem = document.getElementById('message_id');
+        const sourceChannelElem = document.getElementById('source_channel');
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = window.location.pathname;
+        
+        // Add form fields
+        const fields = [
+          ['source_channel', sourceChannelElem ? sourceChannelElem.value : ''],
+          ['message_id', messageIdElem ? messageIdElem.value : ''],
+          ['action', 'translate'],
+          ['edited_source', content]
+        ];
+        
+        fields.forEach(([name, value]) => {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = name;
+          input.value = value;
+          form.appendChild(input);
+        });
+        
+        // Submit the form
+        document.body.appendChild(form);
+        form.submit();
+      }function cancelSourceEdit() {
+        const editArea = document.getElementById('source-edit-area');
+        const messageBlock = document.getElementById('source-message-block');
+        const rawHtmlSource = document.getElementById('raw-html-source');
+        const editBtn = document.getElementById('editSourceBtn');
+        const translatedMessageBlock = document.getElementById('translated-message-block');
+        const rawHtmlContent = document.getElementById('raw-html-content');
+        
+        if (editArea && messageBlock && editBtn) {
+          // Hide editor and show preview
+          editArea.classList.add('hidden');
+          messageBlock.classList.remove('hidden');
+          if (rawHtmlSource) rawHtmlSource.classList.add('hidden');
+          
+          // Restore translation result preview when canceling edit
+          if (translatedMessageBlock) translatedMessageBlock.classList.remove('hidden');
+          
+          // Reset edit button
+          editBtn.innerHTML = '<i class="fas fa-edit fa-sm"></i> Edit';
+          
+          // Reset source editor content
+          const sourceEditor = document.getElementById('source-editor');
+          if (sourceEditor) {
+            sourceEditor.innerHTML = document.getElementById('source-message-content').innerHTML;
+            updateSourcePreview();
+          }
+        }
+      }
+
+      // Ensure toggle raw HTML button works correctly for both source and translation
+      document.addEventListener('DOMContentLoaded', () => {
+        const toggleRawBtn = document.getElementById('toggleRawHtmlBtn');
+        const rawHtmlContent = document.getElementById('raw-html-content');
+        const translatedMessageBlock = document.getElementById('translated-message-block');
+        const rawHtmlSource = document.getElementById('raw-html-source');
+        const sourceMessageBlock = document.getElementById('source-message-block');
+        
+        if (toggleRawBtn && rawHtmlContent && translatedMessageBlock && rawHtmlSource && sourceMessageBlock) {
+          // Set initial state - raw HTML is hidden, preview is shown for both source and translation
+          rawHtmlContent.style.display = 'none';
+          translatedMessageBlock.style.display = 'block';
+          rawHtmlSource.style.display = 'none';
+          sourceMessageBlock.style.display = 'block';
+          
+          toggleRawBtn.addEventListener('click', () => {
+            const isRawVisible = rawHtmlContent.style.display !== 'none';
+            
+            if (isRawVisible) {
+              // Switch to preview mode for both source and translation
+              rawHtmlContent.style.display = 'none';
+              translatedMessageBlock.style.display = 'block';
+              rawHtmlSource.style.display = 'none';
+              sourceMessageBlock.style.display = 'block';
+            } else {
+              // Switch to raw HTML mode for both source and translation
+              rawHtmlContent.style.display = 'block';
+              translatedMessageBlock.style.display = 'none';
+              rawHtmlSource.style.display = 'block';
+              sourceMessageBlock.style.display = 'none';
+            }
+            
+            // Update button text and icon
+            const icon = toggleRawBtn.querySelector('i');
+            const text = toggleRawBtn.querySelector('span');
+            if (rawHtmlContent.style.display === 'none') {
+              icon.className = 'fas fa-code';
+              text.textContent = 'Show Raw HTML';
+            } else {
+              icon.className = 'fas fa-eye';
+              text.textContent = 'Show Preview';
+            }
+          });
+        }
+      });
+
+      function showSpinner(text) {
+        const spinner = document.getElementById('loading_spinner');
+        const spinnerText = document.getElementById('loading_spinner_text');
+        if (spinnerText && text) spinnerText.textContent = text;
+        if (spinner) spinner.classList.remove('hidden');
+      }
+      function hideSpinner() {
+        const spinner = document.getElementById('loading_spinner');
+        if (spinner) spinner.classList.add('hidden');
+      }
+      document.addEventListener('DOMContentLoaded', () => {
+        const translateBtn = document.getElementById('translate_btn');
+        if (translateBtn) {
+          translateBtn.addEventListener('click', () => {
+            showSpinner('Translating... Please wait.');
+          });
+        }
+        const customTranslateBtn = document.getElementById('translate_custom_btn');
+        if (customTranslateBtn) {
+          customTranslateBtn.addEventListener('click', () => {
+            showSpinner('Translating custom message... Please wait.');
+          });
+        }
+        const saveTranslateBtn = document.querySelector(
+          '#source-edit-area button[onclick*="saveSourceEdit"]'
+        );
+        if (saveTranslateBtn) {
+          saveTranslateBtn.addEventListener('click', () => {
+            showSpinner('Translating and saving... Please wait.');
+          });
+        }
+        const postBtn = document.getElementById('postBtn');
+        const postDialog = document.getElementById('postDialog');
+        const postDialogBox = document.getElementById('postDialogBox');
+        const cancelBtn = document.getElementById('cancelPostDialog');
+        const confirmBtn = document.getElementById('confirmPostDialog');
+        const form = document.getElementById('translationForm');
+        if (postBtn && postDialog && cancelBtn && confirmBtn && form) {
+          postBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            
+            // Validate before showing dialog
+            if (!validatePostOperation()) {
+              return;
+            }
+
+            document.getElementById('translation-action').value = 'post';
+            updateTargetChannelId();
+            postDialog.classList.remove('hidden');
+          });
+          
+          cancelBtn.addEventListener('click', () => {
+            postDialog.classList.add('hidden');
+          });
+          
+          confirmBtn.addEventListener('click', () => {
+            // Final validation before submitting
+            if (!validatePostOperation()) {
+              postDialog.classList.add('hidden');
+              return;
+            }
+
+            logPostOperation('confirmPostDialog', {
+              action: document.getElementById('translation-action')?.value,
+              targetChannelId: document.getElementById('target_channel_id')?.value,
+              targetChannel: document.getElementById('target_channel')?.value,
+              hasContent: !!document.querySelector('#translated-message-block')?.textContent?.trim()
+            });
+
+            postDialog.classList.add('hidden');
+            document.getElementById('translation-action').value = 'post';
+            updateTargetChannelId();
+            showSpinner('Posting translation... Please wait.');
+            form.submit();
+          });
+          
+          postDialog.addEventListener('mousedown', (e) => {
+            if (!postDialogBox.contains(e.target)) {
+              postDialog.classList.add('hidden');
+            }
+          });
+        }        const postResult = '{{ post_result }}';
+        if (postResult && postResult !== 'None') {
+          const popup = document.createElement('div');
+          let channelText = '';
+          const sc = document.getElementById('source_channel');
+          if (sc) {
+            channelText = sc.options[sc.selectedIndex].textContent.trim();
+          }
+
+          // Determine if it's an error and parse message
+          const isError = postResult.toLowerCase().includes('fail') || 
+                         postResult.toLowerCase().includes('error');
+          const errorDetails = isError ? extractErrorDetails(postResult) : null;
+          
+          // Create toast content
+          popup.className = `toast-notification ${isError ? 'error' : 'success'}`;
+          popup.innerHTML = `
+            <div class="icon">
+              <i class="fas ${isError ? 'fa-exclamation-circle' : 'fa-check-circle'} fa-lg"></i>
+            </div>
+            <div class="content">
+              <div class="title">${isError ? 'Post Failed' : 'Post Successful'}</div>
+              <div class="message">
+                ${isError ? 'Failed to post translation' : 'Translation posted successfully'}
+                ${channelText ? ` to ${channelText}` : ''}
+              </div>
+              ${errorDetails ? `
+                <div class="details">
+                  <strong>Error:</strong> ${errorDetails.message}<br>
+                  ${errorDetails.code ? `<strong>Code:</strong> ${errorDetails.code}<br>` : ''}
+                  ${errorDetails.suggestion ? `<strong>Suggestion:</strong> ${errorDetails.suggestion}` : ''}
+                </div>
+              ` : ''}
+            </div>
+          `;
+
+          // Add to document and handle removal
+          document.body.appendChild(popup);
+          setTimeout(() => {
+            popup.style.animation = 'slideOut 0.3s ease-in forwards';
+            setTimeout(() => popup.remove(), 300);
+          }, 5000);
+
+          // Scroll to result box if exists
+          const box = document.getElementById('postResultBox');
+          if (box) box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+      // Custom message editor functions
+      function formatText(command) {
+        document.execCommand(command, false, null);
+        updatePreview();
+      }
+      function insertLink() {
+        const url = prompt("Enter the URL:", "http://");
+        if (url) {
+          document.execCommand("createLink", false, url);
+          updatePreview();
+        }
+      }
+      function clearFormatting() {
+        document.execCommand("removeFormat", false, null);
+        updatePreview();
+      }
+      function updatePreview() {
+        const editor = document.getElementById('editor');
+        const preview = document.getElementById('preview');
+        const hiddenInput = document.getElementById('hidden_message_text');
+        
+        if (!editor) {
+          console.log('updatePreview: No editor found');
+          return;
+        }
+        
+        // Get the HTML content
+        const content = editor.innerHTML;
+        
+        // Debug logging
+        console.log('updatePreview called:');
+        console.log('  Editor content length:', content.length);
+        console.log('  Editor content:', content.substring(0, 100) + '...');
+        
+        // Update preview if it exists
+        if (preview) {
+          preview.innerHTML = content;
+        } else {
+          console.log('updatePreview: No preview element found');
+        }
+        
+        // Update hidden input if it exists
+        if (hiddenInput) {
+          hiddenInput.value = content;
+          console.log('  Hidden input updated with length:', content.length);
+        } else {
+          console.log('updatePreview: No hidden input found');
+        }
+      }
+      function handlePaste(event) {
+        event.preventDefault();
+        const text = (event.clipboardData || window.clipboardData).getData('text');
+        document.execCommand('insertText', false, text);
+        updatePreview();
+      }
+      function submitForm() {
+        // Update the hidden input with editor content before submitting
+        updatePreview();
+        
+        const form = document.getElementById('custom-message-form');
+        const editor = document.getElementById('editor');
+        const hiddenInput = document.getElementById('hidden_message_text');
+        
+        // Debug logging
+        console.log('=== CUSTOM FORM SUBMISSION DEBUG ===');
+        console.log('Editor content:', editor ? editor.innerHTML : 'NO EDITOR');
+        console.log('Hidden input value:', hiddenInput ? hiddenInput.value : 'NO HIDDEN INPUT');
+        console.log('Form elements:', form ? Array.from(form.elements).map(e => `${e.name}=${e.value}`).join(', ') : 'NO FORM');
+        
+        if (form && editor && hiddenInput) {
+          // Ensure the hidden input has the editor content
+          const editorContent = editor.innerHTML.trim();
+          hiddenInput.value = editorContent;
+          
+          console.log('Final hidden input value:', hiddenInput.value);
+          
+          // Validate content before submitting
+          if (!editorContent) {
+            alert('Please enter some content in the editor before translating.');
+            console.log('Submission cancelled: empty content');
+            return;
+          }
+          
+          // Add the action field for custom translation
+          const actionInput = document.createElement('input');
+          actionInput.type = 'hidden';
+          actionInput.name = 'action';
+          actionInput.value = 'translate_custom';
+          form.appendChild(actionInput);
+          
+          console.log('Submitting form...');
+          form.submit();
+        } else {
+          console.log('Form submission failed: missing elements');
+          console.log('Form:', !!form);
+          console.log('Editor:', !!editor);
+          console.log('Hidden input:', !!hiddenInput);
+        }
+      }
+      // Enhanced HTML toggle for source message that respects edit mode
+      function toggleSourceHtmlMode() {
+        const editArea = document.getElementById('source-edit-area');
+        const isInEditMode = editArea && !editArea.classList.contains('hidden');
+        
+        // If in edit mode, don't allow HTML toggle
+        if (isInEditMode) {
+          return;
+        }
+        
+        // Call the modal version if available, otherwise use inline logic
+        if (typeof toggleHtmlMode === 'function') {
+          toggleHtmlMode();
+        } else {
+          // Fallback inline implementation
+          const sourceBlock = document.getElementById('source-message-block');
+          const rawHtmlSource = document.getElementById('raw-html-source');
+          const toggleBtn = document.getElementById('toggleRawBtn');
+          
+          if (sourceBlock && rawHtmlSource && toggleBtn) {
+            const isShowingRaw = rawHtmlSource.style.display !== 'none';
+            
+            if (isShowingRaw) {
+              sourceBlock.style.display = 'block';
+              rawHtmlSource.style.display = 'none';
+              toggleBtn.querySelector('span').textContent = 'Toggle Raw HTML';
+              toggleBtn.querySelector('i').className = 'fas fa-code';
+            } else {
+              sourceBlock.style.display = 'none';
+              rawHtmlSource.style.display = 'block';
+              toggleBtn.querySelector('span').textContent = 'Show Preview';
+              toggleBtn.querySelector('i').className = 'fas fa-file-alt';
+            }
+          }
+        }
+      }
+
+      // Source message editor functions (reusing custom editor logic)
+      function formatSourceText(command) {
+        document.execCommand(command, false, null);
+        updateSourcePreview();
+      }
+      
+      function insertSourceLink() {
+        const url = prompt("Enter the URL:", "http://");
+        if (url) {
+          document.execCommand("createLink", false, url);
+          updateSourcePreview();
+        }
+      }
+      
+      function clearSourceFormatting() {
+        document.execCommand("removeFormat", false, null);
+        updateSourcePreview();
+      }
+      
+      function updateSourcePreview() {
+        const editor = document.getElementById('source-editor');
+        if (editor) {
+          const content = editor.innerHTML;
+          // Update character count
+          const charCount = document.getElementById('source-edit-char-count');
+          if (charCount) {
+            charCount.textContent = `${content.replace(/<[^>]*>/g, '').length} characters`;
+          }
+        }
+      }
+      
+      function handleSourcePaste(event) {
+        event.preventDefault();
+        const text = (event.clipboardData || window.clipboardData).getData('text');
+        document.execCommand('insertText', false, text);
+        updateSourcePreview();
+      }
+
+      // Initialize source editor with current content when editing starts
+      function initializeSourceEditor() {
+        const sourceEditor = document.getElementById('source-editor');
+        const sourceContent = document.getElementById('source-message-content');
+        if (sourceEditor && sourceContent) {
+          sourceEditor.innerHTML = sourceContent.innerHTML;
+          updateSourcePreview();
+        }
+      }
+
+      // Add keyboard shortcut support for source editor
+      document.addEventListener('keydown', function(e) {
+        if (e.ctrlKey && e.key === 's') {
+          const sourceEditor = document.getElementById('source-editor');
+          const editArea = document.getElementById('source-edit-area');
+          if (sourceEditor && editArea && !editArea.classList.contains('hidden')) {
+            e.preventDefault();
+            saveSourceEdit();
+          }
+        }
+      });
+
+      // Enhanced toast notification function
+      function showToast(message, type = 'info') {
+        // Remove any existing toasts
+        document.querySelectorAll('.toast-notification').forEach(t => t.remove());
+        
+        // Log to console, especially useful for errors
+        console.group('Toast Notification');
+        console.log('Type:', type);
+        console.log('Message:', message);
+        console.log('Timestamp:', new Date().toISOString());
+        if (type === 'error') {
+          console.error('Error Details:', message);
+          if (Error.stack) {
+            console.log('Stack Trace:', Error().stack);
+          }
+        }
+        console.groupEnd();
+
+        const toast = document.createElement('div');
+        const bgColor = type === 'error' ? 'bg-red-500' : 
+                       type === 'success' ? 'bg-green-500' : 
+                       'bg-blue-500';
+
+        toast.className = `toast-notification fixed bottom-4 right-4 px-6 py-4 rounded-lg shadow-lg text-white flex items-center gap-3 z-50 ${bgColor}`;
+        
+        // Add icon based on type
+        const icon = document.createElement('i');
+        icon.className = `${
+          type === 'error' ? 'fas fa-exclamation-circle' :
+          type === 'success' ? 'fas fa-check-circle' :
+          'fas fa-info-circle'
+        } text-xl`;
+        
+        const content = document.createElement('div');
+        content.className = 'flex flex-col';
+        
+        const title = document.createElement('div');
+        title.className = 'font-medium';
+        title.textContent = type === 'error' ? 'Error' :
+                          type === 'success' ? 'Success' :
+                          'Info';
+                          
+        const text = document.createElement('div');
+        text.className = 'text-sm';
+        text.textContent = message;
+        
+        content.appendChild(title);
+        content.appendChild(text);
+        
+        toast.appendChild(icon);
+        toast.appendChild(content);
+        document.body.appendChild(toast);
+        
+        // Animate in
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(1rem)';
+        requestAnimationFrame(() => {
+          toast.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
+          toast.style.opacity = '1';
+          toast.style.transform = 'translateY(0)';
+        });
+        
+        // Set different durations based on type and message length
+        const baseDuration = type === 'error' ? 10000 : 5000; // 10 seconds for errors, 5 for others
+        const charDuration = Math.min(message.length * 50, 5000); // Add time based on message length
+        const totalDuration = baseDuration + charDuration;
+        
+        // Add progress bar for visual feedback
+        const progressBar = document.createElement('div');
+        progressBar.className = 'absolute bottom-0 left-0 h-1 bg-white bg-opacity-30';
+        progressBar.style.width = '100%';
+        progressBar.style.transition = `width ${totalDuration}ms linear`;
+        toast.appendChild(progressBar);
+        
+        // Animate progress bar
+        requestAnimationFrame(() => {
+          progressBar.style.width = '0%';
+        });
+        
+        // Add click to dismiss
+        toast.addEventListener('click', () => {
+          toast.style.opacity = '0';
+          toast.style.transform = 'translateY(1rem)';
+          setTimeout(() => toast.remove(), 300);
+        });
+        
+        // Remove after calculated delay
+        setTimeout(() => {
+          toast.style.opacity = '0';
+          toast.style.transform = 'translateY(1rem)';
+          setTimeout(() => toast.remove(), 300);
+        }, totalDuration);
+      }
+
+      // Debug logging helper
+      function logPostOperation(source, data) {
+        console.group('Post Operation Debug');
+        console.log('Source:', source);
+        console.log('Timestamp:', new Date().toISOString());
+        console.log('Data:', data);
+        console.groupEnd();
+      }
+
+      // Helper function to extract error details from post result
+      function extractErrorDetails(result) {
+        try {
+          // Handle string results
+          if (typeof result === 'string') {
+            return {
+              message: result,
+              code: 'POST-ERR-UNKNOWN',
+              suggestion: 'Please try again or contact support if the issue persists.'
+            };
+          }
+          
+          // Handle JSON string results
+          if (typeof result === 'string' && result.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(result);
+              return {
+                message: parsed.message || parsed.error || 'Unknown error occurred',
+                code: parsed.code || 'POST-ERR-UNKNOWN',
+                suggestion: parsed.suggestion || 'Please try again or contact support.'
+              };
+            } catch (e) {
+              // If JSON parsing fails, return the string as message
+              return {
+                message: result,
+                code: 'POST-ERR-PARSE',
+                suggestion: 'There was an error processing the response.'
+              };
+            }
+          }
+          
+          // Handle object results
+          if (typeof result === 'object') {
+            return {
+              message: result.message || result.error || 'Unknown error occurred',
+              code: result.code || 'POST-ERR-UNKNOWN',
+              suggestion: result.suggestion || 'Please try again or contact support.'
+            };
+          }
+          
+          // Default case
+          return {
+            message: String(result),
+            code: 'POST-ERR-UNKNOWN',
+            suggestion: 'An unexpected error occurred. Please try again.'
+          };
+        } catch (e) {
+          console.error('Error extracting error details:', e);
+          return {
+            message: 'Failed to process error details',
+            code: 'POST-ERR-INTERNAL',
+            suggestion: 'Please try again or contact support if the issue persists.'
+          };
+        }
+      }
+
+      // Form validation for translation
+      function validateTranslationForm(event) {
+        const messageId = document.getElementById('message_id')?.value;
+        const sourceChannel = document.getElementById('source_channel')?.value;
+        const translationResult = document.querySelector('#translated-message-block')?.textContent?.trim();
+        const rawHtmlResult = document.querySelector('#raw-html-content pre')?.textContent?.trim();
+        
+        logPostOperation('validateTranslationForm', {
+          messageId,
+          sourceChannel,
+          action: 'translate',
+          hasTranslation: !!translationResult,
+          hasRawHtml: !!rawHtmlResult
+        });
+        
+        // Validate source channel
+        if (!sourceChannel) {
+          showToast('Please select a source channel', 'error');
+          if (event) event.preventDefault();
+          return false;
+        }
+        
+        // Validate message selection for existing messages
+        const customSection = document.getElementById('custom-message-section');
+        const isCustomMode = customSection && !customSection.classList.contains('hidden');
+        
+        if (!isCustomMode && !messageId) {
+          showToast('Please select a message to translate', 'error');
+          if (event) event.preventDefault();
+          return false;
+        }
+        
+        // If we're in custom message mode, validate the editor content
+        if (isCustomMode) {
+          const editor = document.getElementById('editor');
+          const hiddenInput = document.getElementById('hidden_message_text');
+          const editorContent = editor?.textContent?.trim();
+          
+          if (!editorContent) {
+            showToast('Please enter a message in the editor', 'error');
+            if (event) event.preventDefault();
+            return false;
+          }
+          
+          // Ensure hidden input is updated with latest content
+          if (hiddenInput && editor) {
+            hiddenInput.value = editor.innerHTML;
+          }
+        }
+
+        // Validate translation content before posting
+        if (event?.submitter?.value === 'post') {
+          const messageToSend = rawHtmlResult || translationResult;
+          if (!messageToSend) {
+            showToast('Cannot post empty message. Please ensure there is translated content.', 'error');
+            console.error('Post validation failed: Empty message content', {
+              translationResult: !!translationResult,
+              rawHtmlResult: !!rawHtmlResult
+            });
+            event.preventDefault();
+            return false;
+          }
+        }
+        
+        showSpinner('Processing... Please wait.');
+        return true;
+      }
+
+      // Post confirmation and validation
+      document.addEventListener('DOMContentLoaded', () => {
+        const postForm = document.getElementById('translationForm');
+        const postBtn = document.getElementById('postBtn');
+        const postDialog = document.getElementById('postDialog');
+        const postDialogBox = document.getElementById('postDialogBox');
+        const cancelBtn = document.getElementById('cancelPostDialog');
+        const confirmBtn = document.getElementById('confirmPostDialog');
+
+        if (postForm && postBtn && postDialog && cancelBtn && confirmBtn) {
+          // Prepare message content and validate before showing dialog
+          function validateAndPrepareMessage() {
+            const translationInput = postForm.querySelector('input[name="translation_result"]');
+            const rawHtmlInput = postForm.querySelector('input[name="raw_html_result"]');
+            const targetChannelInput = postForm.querySelector('input[name="target_channel_id"]');
+            
+            // Log current state
+            console.log('[DEBUG] Message Content Check:', {
+              hasTranslation: !!translationInput?.value,
+              translationLength: translationInput?.value?.length,
+              hasRawHtml: !!rawHtmlInput?.value,
+              rawHtmlLength: rawHtmlInput?.value?.length,
+              targetChannel: targetChannelInput?.value
+            });
+
+            // Validate content
+            const messageContent = rawHtmlInput?.value?.trim() || translationInput?.value?.trim();
+            if (!messageContent) {
+              showToast('Cannot post empty message. Please ensure there is translated content.', 'error');
+              console.error('Post validation failed: Empty message content');
+              return false;
+            }
+
+            // Check for visible text (not just HTML)
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = messageContent;
+            const visibleText = tempDiv.textContent.trim();
+            if (!visibleText) {
+              showToast('Message contains no visible text. Please add some content.', 'error');
+              console.error('Post validation failed: No visible text');
+              return false;
+            }
+
+            // Validate target channel
+            if (!targetChannelInput?.value) {
+              showToast('Please select a target channel', 'error');
+              console.error('Post validation failed: No target channel');
+              return false;
+            }
+
+            // Log successful validation
+            console.log('[DEBUG] Message validation passed:', {
+              contentLength: messageContent.length,
+              visibleTextLength: visibleText.length,
+              targetChannel: targetChannelInput.value
+            });
+
+            return true;
+          }
+
+          postBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (validateAndPrepareMessage()) {
+              document.getElementById('translation-action').value = 'post';
+              updateTargetChannelId();
+              postDialog.classList.remove('hidden');
+            }
+          });
+
+          cancelBtn.addEventListener('click', () => {
+            postDialog.classList.add('hidden');
+          });
+
+          confirmBtn.addEventListener('click', () => {
+            if (validateAndPrepareMessage()) {
+              postDialog.classList.add('hidden');
+              document.getElementById('translation-action').value = 'post';
+              updateTargetChannelId();
+              showSpinner('Posting translation... Please wait.');
+              // Add final debug log before submission
+              console.log('[DEBUG] Submitting post form:', {
+                action: postForm.querySelector('input[name="action"]')?.value,
+                targetChannel: postForm.querySelector('input[name="target_channel_id"]')?.value,
+                messageLength: postForm.querySelector('input[name="raw_html_result"]')?.value?.length || 
+                             postForm.querySelector('input[name="translation_result"]')?.value?.length
+              });
+              postForm.submit();
+            }
+          });
+
+          postDialog.addEventListener('mousedown', (e) => {
+            if (!postDialogBox.contains(e.target)) {
+              postDialog.classList.add('hidden');
+            }
+          });
+        }
+      });
+    </script>
+  </body>
+</html>
+{% endblock %}

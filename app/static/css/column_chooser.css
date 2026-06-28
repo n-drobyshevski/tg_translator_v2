@@ -1,0 +1,443 @@
+/* Column Chooser Modal Styles */
+.column-chooser-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.column-item,
+.column-chooser-li {
+    display: flex !important;
+    align-items: center !important;
+    padding: 0.75rem !important;
+    background-color: white !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 0.5rem !important;
+    margin-bottom: 0.5rem !important;
+    transition: all 0.2s ease !important;
+    min-height: 60px !important;
+    width: 100% !important;
+}
+
+.column-item:hover,
+.column-chooser-li:hover {
+    background-color: #f9fafb !important;
+}
+
+.column-item.dragging,
+.column-chooser-li.dragging {
+    opacity: 0.5;
+    border: 2px dashed #6b7280 !important;
+    background-color: #f3f4f6 !important;
+}
+
+.column-item.drag-over,
+.column-chooser-li.drag-over {
+    border: 2px dashed #2563eb !important;
+    background-color: #eff6ff !important;
+}
+
+.drag-handle {
+    cursor: grab !important;
+    padding: 0.5rem !important;
+    color: #9ca3af !important;
+    margin-right: 0.75rem !important;
+    flex-shrink: 0 !important;
+    width: auto !important;
+    min-width: 24px !important;
+}
+
+.drag-handle:hover {
+    color: #6b7280 !important;
+}
+
+.column-info {
+    flex: 1 !important;
+    margin-right: 1rem !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+}
+
+.column-name {
+    font-weight: 500 !important;
+    color: #1f2937 !important;
+    margin-bottom: 0.25rem !important;
+    font-size: 0.875rem !important;
+    line-height: 1.25rem !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+}
+
+.column-description {
+    font-size: 0.75rem !important;
+    color: #6b7280 !important;
+    line-height: 1rem !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+}
+
+/* Toggle Switch */
+.switch-container {
+    display: flex !important;
+    align-items: center !important;
+    flex-shrink: 0 !important;
+    margin-left: auto !important;
+}
+
+.switch {
+    position: relative !important;
+    display: inline-block !important;
+    width: 36px !important;
+    height: 20px !important;
+    flex-shrink: 0 !important;
+}
+
+.switch input {
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+}
+
+.slider {
+    position: absolute !important;
+    cursor: pointer !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    background-color: #e5e7eb !important;
+    transition: 0.2s !important;
+    border-radius: 20px !important;
+}
+
+.slider:before {
+    position: absolute !important;
+    content: "" !important;
+    height: 16px !important;
+    width: 16px !important;
+    left: 2px !important;
+    bottom: 2px !important;
+    background-color: white !important;
+    transition: 0.2s !important;
+    border-radius: 50% !important;
+}
+
+input:checked + .slider {
+    background-color: #2563eb !important;
+}
+
+input:focus + .slider {
+    box-shadow: 0 0 1px #2563eb !important;
+}
+
+input:checked + .slider:before {
+    transform: translateX(16px) !important;
+}
+
+/* Locked Column States */
+.column-item.locked {
+    background-color: #f9fafb;
+    cursor: not-allowed;
+}
+
+.column-item.locked .drag-handle {
+    color: #d1d5db;
+    cursor: not-allowed;
+}
+
+.column-item.locked .switch input {
+    cursor: not-allowed;
+}
+
+/* Search Input */
+#column-search:focus {
+    outline: none !important;
+    border-color: #3b82f6 !important;
+    box-shadow: 0 0 0 1px #3b82f6 !important;
+}
+
+/* Animation for drag and drop */
+@keyframes dragStart {
+    from { transform: scale(1); }
+    to { transform: scale(1.02); }
+}
+
+.column-item.dragging {
+    animation: dragStart 0.2s forwards;
+}
+
+/* Modal container fixes */
+#column-chooser-modal .modal-container {
+    min-width: 500px !important;
+    max-width: 600px !important;
+    width: 90vw !important;
+}
+
+#column-chooser-modal .modal-body {
+    padding: 1.5rem !important;
+}
+
+#column-chooser-modal .columns-container {
+    max-height: 400px !important;
+    overflow-y: auto !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 0.5rem !important;
+    padding: 0.5rem !important;
+    background-color: #fafafa !important;
+}
+
+/* Search input container */
+#column-chooser-modal .relative {
+    margin-bottom: 1rem !important;
+}
+
+#column-search {
+    width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+/* Ensure proper spacing and layout during search */
+.column-chooser-list {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.5rem !important;
+}
+
+/* Fix for search state */
+.column-chooser-li[style*="display: none"] {
+    display: none !important;
+}
+
+.column-chooser-li[style*="display: block"] {
+    display: flex !important;
+}
+
+/* No results message styling */
+#no-results-message {
+    text-align: center !important;
+    padding: 2rem !important;
+    color: #6b7280 !important;
+}
+
+#no-results-message.hidden {
+    display: none !important;
+}
+
+/* Additional fixes for search interaction */
+#clear-search {
+    background: none !important;
+    border: none !important;
+    padding: 0.25rem !important;
+    cursor: pointer !important;
+}
+
+#clear-search:hover {
+    color: #374151 !important;
+}
+
+/* Ensure consistent layout during filtering */
+.column-chooser-list li {
+    box-sizing: border-box !important;
+}
+
+/* Fix for Tailwind CSS conflicts */
+.column-chooser-li * {
+    box-sizing: border-box !important;
+}
+
+/* Ensure proper flexbox behavior */
+.column-chooser-li {
+    justify-content: space-between !important;
+    align-items: center !important;
+}
+
+.column-chooser-li .column-info {
+    flex-grow: 1 !important;
+    flex-shrink: 1 !important;
+    overflow: hidden !important;
+}
+
+.column-chooser-li .switch-container {
+    flex-shrink: 0 !important;
+}
+
+/* Column Section Styles */
+.column-section {
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin-bottom: 0.75rem;
+    transition: all 0.2s ease;
+}
+
+.column-section:last-child {
+    margin-bottom: 0;
+}
+
+/* Selected Columns Section */
+.column-section:has(#selected-column-list) {
+    background-color: #f0f9ff; /* Light blue background */
+    border: 1px solid #e0f2fe;
+}
+
+/* Available Columns Section */
+.column-section:has(#available-column-list) {
+    background-color: #fafafa; /* Light gray background */
+    border: 1px solid #e5e7eb;
+}
+
+/* Section Headers */
+.column-section h4 {
+    display: flex !important;
+    align-items: center !important;
+    font-weight: 600 !important;
+    color: #374151 !important;
+    margin-bottom: 0.75rem !important;
+}
+
+.column-section h4 i {
+    margin-right: 0.5rem !important;
+    font-size: 0.875rem !important;
+}
+
+/* Count Badges */
+#selected-count {
+    background-color: #dcfce7 !important;
+    color: #166534 !important;
+    border: 1px solid #bbf7d0 !important;
+}
+
+#available-count {
+    background-color: #f3f4f6 !important;
+    color: #4b5563 !important;
+    border: 1px solid #d1d5db !important;
+}
+
+/* Bulk Action Buttons */
+#select-all-columns,
+#clear-all-columns {
+    font-size: 0.75rem !important;
+    padding: 0.25rem 0.5rem !important;
+    border-radius: 0.375rem !important;
+    transition: all 0.2s ease !important;
+    text-decoration: none !important;
+}
+
+#select-all-columns:hover {
+    background-color: #dbeafe !important;
+}
+
+#clear-all-columns:hover {
+    background-color: #fee2e2 !important;
+}
+
+/* Enhanced Column Item States */
+.column-chooser-li.selected {
+    background-color: white !important;
+    border-color: #3b82f6 !important;
+    box-shadow: 0 1px 3px rgba(59, 130, 246, 0.1) !important;
+}
+
+.column-chooser-li.available {
+    background-color: white !important;
+    border-color: #e5e7eb !important;
+}
+
+.column-chooser-li.selected:hover {
+    background-color: #eff6ff !important;
+    border-color: #2563eb !important;
+}
+
+.column-chooser-li.available:hover {
+    background-color: #f9fafb !important;
+    border-color: #d1d5db !important;
+}
+
+/* Sortable Animation States */
+.sortable-ghost {
+    opacity: 0.4 !important;
+    background-color: #f3f4f6 !important;
+    border: 2px dashed #9ca3af !important;
+}
+
+.sortable-chosen {
+    background-color: #eff6ff !important;
+    border-color: #3b82f6 !important;
+    box-shadow: 0 4px 6px rgba(59, 130, 246, 0.15) !important;
+}
+
+.sortable-drag {
+    transform: rotate(5deg) !important;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* Transition Animations */
+.column-chooser-li {
+    transition: all 0.2s ease !important;
+}
+
+/* Section Visibility During Search */
+.column-section[style*="display: none"] {
+    display: none !important;
+}
+
+.column-section[style*="display: block"] {
+    display: block !important;
+}
+
+/* Enhanced Modal Layout for Grouped Sections */
+#column-chooser-modal .columns-container {
+    max-height: 500px !important;
+    padding: 0.75rem !important;
+}
+
+/* Accessibility Improvements */
+.column-section[role="region"] {
+    border-radius: 0.5rem !important;
+    padding: 1rem !important;
+}
+
+/* Focus States for Bulk Actions */
+#select-all-columns:focus,
+#clear-all-columns:focus {
+    outline: 2px solid #3b82f6 !important;
+    outline-offset: 2px !important;
+}
+
+/* Empty State Styling */
+.column-chooser-list:empty::after {
+    content: "No columns";
+    display: block;
+    text-align: center;
+    color: #9ca3af;
+    font-style: italic;
+    padding: 1rem;
+    font-size: 0.875rem;
+}
+
+#selected-column-list:empty::after {
+    content: "No columns selected";
+}
+
+#available-column-list:empty::after {
+    content: "No columns available";
+}
+
+/* Responsive adjustments for grouped sections */
+@media (max-width: 640px) {
+    .column-section {
+        padding: 0.75rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    
+    .column-section h4 {
+        font-size: 0.875rem !important;
+    }
+    
+    #selected-count,
+    #available-count {
+        font-size: 0.75rem !important;
+        padding: 0.125rem 0.375rem !important;
+    }
+}

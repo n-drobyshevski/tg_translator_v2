@@ -1,0 +1,323 @@
+{% extends "base.html" %} {% block title %}Admin Dashboard{% endblock %} {%
+block head %}
+
+<!-- Roboto font -->
+<link
+  href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap"
+  rel="stylesheet"
+/>
+<!-- FontAwesome, Chart.js, and noUiSlider CSS -->
+<link
+  rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
+  crossorigin="anonymous"
+  referrerpolicy="no-referrer"
+/>
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css"
+/>
+<!-- Dashboard specific styles -->
+<link
+  rel="stylesheet"
+  href="{{ url_for('static', filename='css/dashboard.css') }}"
+/>
+{% endblock %} {% block header %}
+<div class="flex items-center w-full">
+  <div class="flex flex-row w-full items-center justify-between">
+    <h1 class="page-title">
+      <span>Dashboard</span>
+    </h1>    <!-- Test Channel Toggle -->
+    <div class="flex items-center">
+      <label
+        class="custom-checkbox flex items-center bg-gray-50 py-1.5 px-3 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+        for="include_test_channels"
+      >        <input 
+          type="checkbox" 
+          id="include_test_channels" 
+          checked
+          aria-describedby="toggle-description"
+        />
+        <span class="checkmark mr-2" role="presentation"></span>
+        <span class="text-sm text-gray-600 font-medium">Include test channels</span>
+        <span id="toggle-description" class="sr-only">
+          Toggle to include or exclude test channels from statistics
+        </span>
+      </label>
+      <!-- Loading indicator -->
+      <div id="stats-loading" class="ml-2 hidden">
+        <svg class="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %} {% block content %}
+<!-- MAIN GRID: 2 rows layout -->
+<div class="flex flex-col gap-4 sm:gap-6 mb-4 sm:mb-8 p-2 sm:p-0">
+  <!-- 1st row: Posts per Channel & KPIs -->
+  <div class="flex flex-col lg:flex-row gap-4 sm:gap-6">
+    <!-- Posts per Channel (2/3 width) -->
+    <div
+      class="w-full lg:w-2/3 flex flex-col chart-card rounded-xl p-3 sm:p-4 min-h-[300px] lg:h-80"
+    >
+      <div
+        class="chart-header flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-0 mb-4 flex-shrink-0"
+      >
+        <h2 class="font-semibold text-gray-800 flex items-center gap-2">
+          <i class="fas fa-chart-bar text-blue-500"></i>
+          <span>Posts per Channel</span>
+        </h2>
+        <!-- Horizontal Time Range Picker -->
+        <div class="flex items-center w-full sm:w-auto">
+          <div
+            class="time-range-picker flex items-center gap-3 py-2 px-3 rounded-lg bg-gray-50 w-full sm:w-auto"
+          >
+            <div class="flex items-center gap-2 w-full sm:w-auto">
+              <div
+                id="horizontal-slider"
+                class="flex-1 sm:w-32 min-w-[120px]"
+              ></div>
+              <div class="flex items-center gap-1 whitespace-nowrap">
+                <span
+                  id="timeRangeValue"
+                  class="font-mono text-blue-700 text-sm font-medium min-w-[1.5rem] text-center"
+                  >10</span
+                >
+                <span class="text-xs text-gray-600">days</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Chart container with overflow handling -->
+      <div class="flex-1 min-h-0 relative">
+        <div
+          class="absolute inset-0 overflow-x-auto overflow-y-hidden chart-scroll"
+        >
+          <div
+            class="min-w-[400px] sm:min-w-[600px] h-full"
+            id="chartContainer"
+          >
+            <canvas id="chartPosts10dChannels" class="w-full h-full"></canvas>
+          </div>
+        </div>
+      </div>
+      <!-- Hidden input for JS compatibility -->
+      <input
+        type="range"
+        id="timeRangeDays"
+        min="3"
+        max="30"
+        value="10"
+        style="display: none"
+      />
+    </div>
+
+    <!-- KPIs and Quick Links (1/3 width) -->
+    <div class="w-full lg:w-1/3">
+      <!-- KPI Cards Container -->
+      <div class="grid grid-cols-2 gap-3 lg:h-80">
+        <!-- Total Posts -->
+        <div class="chart-card rounded-lg p-3 flex items-center space-x-3">
+          <div
+            class="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0"
+          >
+            <i class="fas fa-chart-bar text-blue-600 text-lg"></i>
+          </div>
+          <div class="min-w-0">
+            <div
+              class="text-lg sm:text-xl font-bold text-blue-700 stats-value truncate"
+            >
+              {{ stats.total_posts }}
+            </div>
+            <div class="text-xs text-gray-500 stats-label truncate">
+              Total posts
+            </div>
+          </div>
+        </div>
+
+        <!-- Success Rate -->
+        <div class="chart-card rounded-lg p-3 flex items-center space-x-3">
+          <div
+            class="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center flex-shrink-0"
+          >
+            <i class="fas fa-check text-green-600 text-lg"></i>
+          </div>
+          <div class="min-w-0">
+            <div
+              class="text-lg sm:text-xl font-bold text-green-700 stats-value truncate"
+            >
+              {{ stats.success_rate }}%
+            </div>
+            <div class="text-xs text-gray-500 stats-label truncate">
+              Success rate
+            </div>
+          </div>
+        </div>
+
+        <!-- Avg Latency -->
+        <div class="chart-card rounded-lg p-3 flex items-center space-x-3">
+          <div
+            class="w-8 h-8 rounded-lg bg-cyan-50 flex items-center justify-center flex-shrink-0"
+          >
+            <i class="fas fa-clock text-cyan-600 text-lg"></i>
+          </div>
+          <div class="min-w-0">
+            <div
+              class="text-lg sm:text-xl font-bold text-cyan-700 stats-value truncate"
+            >
+              {{ stats.avg_latency }}
+            </div>
+            <div class="text-xs text-gray-500 stats-label truncate">
+              Avg latency (s)
+            </div>
+          </div>
+        </div>        <!-- Error Count -->
+        <a href="{{ url_for('admin_stats_bp.admin_stats') }}?filter_errors=true" 
+           class="chart-card rounded-lg p-3 flex items-center space-x-3 hover:shadow-lg hover:scale-105 transition-all duration-200 cursor-pointer group"
+           title="Click to view error details">
+          <div
+            class="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center flex-shrink-0 group-hover:bg-red-100 transition-colors"
+          >
+            <i class="fas fa-exclamation-triangle text-red-600 text-lg group-hover:text-red-700"></i>
+          </div>
+          <div class="min-w-0 flex-1">
+            <div
+              class="text-lg sm:text-xl font-bold text-red-600 stats-value truncate group-hover:text-red-700"
+            >
+              {{ stats.error_count }}
+            </div>
+            <div class="text-xs text-gray-500 stats-label truncate group-hover:text-gray-600">
+              Number of errors
+            </div>
+          </div>
+          <div class="opacity-0 group-hover:opacity-100 transition-opacity">
+            <i class="fas fa-arrow-right text-gray-400 text-sm"></i>
+          </div>
+        </a>
+
+        <!-- Busiest Channel -->
+        <div
+          class="chart-card rounded-lg p-3 col-span-2 flex items-center space-x-3"
+        >
+          <div
+            class="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center flex-shrink-0"
+          >
+            <i class="fas fa-star text-indigo-600 text-lg"></i>
+          </div>
+          <div class="min-w-0 flex-1">
+            <div
+              class="text-base sm:text-lg font-bold text-indigo-700 truncate stats-value"
+            >
+              {{ stats.busiest_pair }}
+            </div>
+            <div class="text-xs text-gray-500 truncate stats-label">
+              Busiest channel ({{ stats.busiest_pair_percent }}%)
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2nd row: 3 charts -->
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+    <!-- Daily Post Volume chart -->
+    <div
+      class="chart-card rounded-xl p-3 sm:p-4 flex flex-col min-h-[240px] sm:h-[280px]"
+    >
+      <div class="chart-header flex items-center justify-between mb-3">
+        <h2 class="font-semibold text-gray-800 flex items-center gap-2 min-w-0">
+          <i class="fas fa-chart-line text-blue-500 flex-shrink-0"></i>
+          <span class="truncate">Daily Post Volume</span>
+        </h2>
+        <div
+          class="chart-badge text-xs text-gray-600 px-2 py-1 rounded-md flex-shrink-0"
+        >
+          Last 7 days
+        </div>
+      </div>
+      <div class="flex-1 min-h-0 relative aspect-[4/3]">
+        <div class="absolute inset-0">
+          <canvas id="chartPosts10d" class="w-full h-full"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Heatmap chart -->
+    <div
+      class="chart-card rounded-xl p-3 sm:p-4 flex flex-col min-h-[240px] sm:h-[280px]"
+    >
+      <div class="chart-header flex items-center justify-between mb-3">
+        <h2 class="font-semibold text-gray-800 flex items-center gap-2 min-w-0">
+          <i class="fas fa-calendar-alt text-indigo-500 flex-shrink-0"></i>
+          <span class="truncate">Posting Activity</span>
+        </h2>
+        <div
+          class="chart-badge text-xs text-gray-600 px-2 py-1 rounded-md flex-shrink-0"
+        >
+          Hour & Day
+        </div>
+      </div>
+      <div class="flex-1 min-h-0 relative aspect-[4/3]">
+        <div class="absolute inset-0">
+          <canvas id="heatmapChart" class="w-full h-full"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scatter plot -->
+    <div
+      class="chart-card rounded-xl p-3 sm:p-4 flex flex-col min-h-[240px] sm:h-[280px] md:col-span-2 lg:col-span-1"
+    >
+      <div class="chart-header flex items-center justify-between mb-3">
+        <h2 class="font-semibold text-gray-800 flex items-center gap-2 min-w-0">
+          <i class="fas fa-tachometer-alt text-green-500 flex-shrink-0"></i>
+          <span class="truncate">Performance Analysis</span>
+        </h2>
+        <div
+          class="chart-badge text-xs text-gray-600 px-2 py-1 rounded-md flex-shrink-0"
+        >
+          Throughput vs. Latency
+        </div>
+      </div>
+      <div class="flex-1 min-h-0 relative aspect-[4/3]">
+        <div class="absolute inset-0">
+          <canvas id="chartThroughputLatency" class="w-full h-full"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %} {% block scripts %}
+
+
+<!-- Scripts: Chart.js, Chartjs Matrix, dashboard, noUiSlider -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+  if (typeof Chart !== "undefined") {
+    // Register the 'nearest' interaction mode if not already registered
+    if (!Chart.Interaction.modes.nearest) {
+      console.warn("nearest mode not found, falling back to index mode");
+    }
+  } else {
+    console.error("Chart.js failed to load!");
+  }
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@1.2.0/dist/chartjs-chart-matrix.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
+
+<!-- Main dashboard script with debug logs -->
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+<script>  window.addEventListener('load', function() {
+      // Initialize all charts and verify their existence
+      if (typeof loadMetrics === 'function') {
+          loadMetrics();
+      }
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,419 @@
+{% extends "base.html" %}
+
+{% block title %}Configuration{% endblock %}
+
+{% block head %}
+<link
+  rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
+/>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin_config.css') }}" />
+{% endblock %}
+{% block header %}
+<div class="flex items-center w-full">
+  
+  <div class="flex flex-row w-full items-center justify-between">
+        
+  <h1 class="page-title">
+    <span>Configuration</span>
+  </h1>
+    <!-- Test Channel Checkbox -->
+    <div class="flex items-center gap-2 ml-4">
+      <div class="admin-btn-group">
+        <form method="POST" class="flex-grow">
+          <button type="submit" name="action" value="load"
+            class="admin-btn admin-btn-primary"
+            aria-label="Load existing configuration"
+            x-data="{ loading: false }"
+            :aria-busy="loading"
+            @click="loading = true"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            Load Existing
+          </button>
+        </form>
+        <form method="POST" class="flex-grow">
+          <input type="hidden" name="action" value="restart" />
+          <button type="submit"
+            class="admin-btn admin-btn-warning"
+            aria-label="Restart task service"
+            x-data="{ loading: false }"
+            :aria-busy="loading"
+            @click="loading = true"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Restart Task
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="flex h-full"     x-data="{ 
+       initScrollBehavior() {
+         // Handle hash changes
+         window.addEventListener('hashchange', () => {
+           if (window.location.hash) {
+             const section = document.getElementById(window.location.hash.substring(1));
+             if (section) {
+               section.scrollIntoView({ behavior: 'smooth' });
+             }
+           }
+         });
+
+         // Handle initial hash if present
+         if (window.location.hash) {
+           const section = document.getElementById(window.location.hash.substring(1));
+           if (section) {
+             // Use timeout to ensure scroll happens after page load
+             setTimeout(() => {
+               section.scrollIntoView({ behavior: 'smooth' });
+             }, 100);
+           }
+         }
+       }
+     }"
+     x-init="initScrollBehavior()"
+>
+  <!-- Main Config Content -->
+  <div class="flex-1 pr-4">    <!-- Mobile Quick Jump -->
+    <div class="lg:hidden mb-4">
+      <label for="section-select" class="sr-only">Jump to section</label>
+      <select
+        id="section-select"
+        class="w-full rounded-lg border border-gray-200 p-2.5 text-sm"
+        @change="window.location.hash = $event.target.value"
+      >
+        <option value="" disabled selected>Jump to section...</option>
+        <option value="main-bot">Main Bot Settings</option>
+        <option value="target-source">Test Channels</option>
+        <option value="cv-snk">Production Channels</option>
+        <option value="pythonanywhere">PythonAnywhere Settings</option>
+      </select>
+    </div>
+
+    
+
+    <!-- Configuration Form -->
+    <form method="POST" class="space-y-8" @submit.prevent="showConfirmModal">
+      <!-- Main Bot Settings Section -->      <section id="main-bot" class="scroll-mt-6">
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h2 class="text-lg font-semibold mb-4">Main Bot Settings</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label
+                class="block font-medium mb-1"
+                for="bot_token"
+              >Bot Token (TELEGRAM_BOT_TOKEN)</label
+              >
+              <input
+                type="text"
+                class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                name="bot_token"
+                id="bot_token"
+                value="{{ current_bot_token }}"
+              />
+            </div>
+            <div>
+              <label
+                class="block font-medium mb-1"
+                for="api_key"
+              >Anthropic API Key</label
+              >
+              <input
+                type="text"
+                class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                name="api_key"
+                id="api_key"
+                value="{{ current_api_key }}"
+              />
+            </div>
+            <div>
+              <label
+                class="block font-medium mb-1"
+                for="admin_password"
+              >Admin Password (ADMIN_PASSWORD)</label
+              >
+              <input
+                type="text"
+                class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                name="admin_password"
+                id="admin_password"
+                value="{{ current_admin_password }}"
+              />
+            </div>
+          </div>
+          <div class="mt-6">
+            <label class="block font-medium mb-1" for="prompt_text"
+              >Prompt Text</label
+            >
+            <textarea
+              class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+              name="prompt_text"
+              id="prompt_text"
+              rows="8"
+            >{{ current_prompt }}</textarea>
+          </div>
+          <a
+            class="inline-block mt-3 px-4 py-2 bg-transparent border border-blue-600 text-blue-600 rounded hover:bg-blue-600 hover:text-white transition text-sm sm:text-base"
+            href="/admin/prompt"
+          >
+            <i class="fa-solid fa-pen-to-square mr-2"></i>
+            Edit Prompt Template
+          </a>
+        </div>
+      </section>
+
+      <!-- Test Channels Section -->
+      <section id="target-source" class="scroll-mt-6">
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h2 class="text-lg font-semibold mb-4">Test Channels</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label
+                class="block font-medium mb-1"
+                for="source_test_id"
+                >SOURCE_TEST_ID</label
+              >
+              <input
+                type="text"
+                class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                name="source_test_id"
+                id="source_test_id"
+                value="{{ current_source_test_id }}"
+              />
+            </div>
+            <div>
+              <label
+                class="block font-medium mb-1"
+                for="target_channel_id"
+                >TARGET_CHANNEL_ID</label
+              >
+              <input
+                type="text"
+                class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                name="target_channel_id"
+                id="target_channel_id"
+                value="{{ current_target_channel_id }}"
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Production Channels Section -->
+      <section id="cv-snk" class="scroll-mt-6">
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h2 class="text-lg font-semibold mb-4">Production Channels</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <!-- ChristianVision -->
+            <div>
+              <h3 class="text-base sm:text-lg font-semibold mb-3">
+                ChristianVision
+              </h3>
+              <div class="mb-5">
+                <label
+                  class="block font-medium mb-1"
+                  for="cv_channel"
+                  >CHRISTIANVISION_CHANNEL</label
+                >
+                <input
+                  type="text"
+                  class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                  name="cv_channel"
+                  id="cv_channel"
+                  value="{{ current_cv_channel }}"
+                />
+              </div>
+              <div class="mb-5">
+                <label
+                  class="block font-medium mb-1"
+                  for="cv_en_channel_id"
+                  >CHRISTIANVISION_EN_CHANNEL_ID</label
+                >
+                <input
+                  type="text"
+                  class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                  name="cv_en_channel_id"
+                  id="cv_en_channel_id"
+                  value="{{ current_cv_en_channel_id }}"
+                />
+              </div>
+            </div>
+            <!-- ShaltNotKill -->
+            <div>
+              <h3 class="text-base sm:text-lg font-semibold mb-3">
+                ShaltNotKill
+              </h3>
+              <div class="mb-5">
+                <label
+                  class="block font-medium mb-1"
+                  for="snk_channel"
+                  >SHALTNOTKILL_CHANNEL</label
+                >
+                <input
+                  type="text"
+                  class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                  name="snk_channel"
+                  id="snk_channel"
+                  value="{{ current_snk_channel }}"
+                />
+              </div>
+              <div class="mb-5">
+                <label
+                  class="block font-medium mb-1"
+                  for="snk_en_channel_id"
+                  >SHALTNOTKILL_EN_CHANNEL_ID</label
+                >
+                <input
+                  type="text"
+                  class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                  name="snk_en_channel_id"
+                  id="snk_en_channel_id"
+                  value="{{ current_snk_en_channel_id }}"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- PythonAnywhere Settings Section -->
+      <section id="pythonanywhere" class="scroll-mt-6">
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h2 class="text-lg font-semibold mb-4">
+            PythonAnywhere Settings
+          </h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label
+                class="block font-medium mb-1"
+                for="pythonanywhere_api_token"
+                >PythonAnywhere API Token</label
+              >
+              <input
+                type="text"
+                class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                name="pythonanywhere_api_token"
+                id="pythonanywhere_api_token"
+                value="{{ current_pythonanywhere_api_token }}"
+              />
+            </div>
+            <div>
+              <label
+                class="block font-medium mb-1"
+                for="pythonanywhere_username"
+                >PythonAnywhere Username</label
+              >
+              <input
+                type="text"
+                class="w-full border rounded px-3 py-2 text-sm sm:text-base"
+                name="pythonanywhere_username"
+                id="pythonanywhere_username"
+                value="{{ current_pythonanywhere_username }}"
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Save Button -->
+      <div class="sticky bottom-0 bg-white border-t border-gray-200 p-4 mt-8">
+        <button
+          type="submit"
+          class="w-full sm:w-auto px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition"
+        >
+          Save Configuration
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Confirmation Modal -->
+<dialog id="confirmSaveModal" class="rounded-lg shadow-lg w-11/12 max-w-md">
+  <div class="bg-white rounded-lg">
+    <div class="flex justify-between items-center border-b px-4 py-2.5">
+      <h3 class="text-lg font-semibold">Confirm Save</h3>
+      <button type="button" class="text-gray-400 hover:text-gray-600" @click="$el.closest('dialog').close()">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="p-4">
+      <p>Are you sure you want to save the configuration?</p>
+    </div>
+    <div class="flex justify-end gap-2 border-t px-4 py-2.5">
+      <button
+        type="button"
+        class="px-4 py-2 text-gray-700 bg-gray-100 rounded hover:bg-gray-200 transition"
+        @click="$el.closest('dialog').close()"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        class="px-4 py-2 text-white bg-blue-600 rounded hover:bg-blue-700 transition"
+        @click="$el.closest('form').submit(); $el.closest('dialog').close()"
+      >
+        Confirm
+      </button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Toast Messages -->
+<div class="fixed top-4 right-4 z-50 space-y-4">
+  <div
+    x-data="{ show: false, message: '' }"
+    x-show="show"
+    x-transition
+    x-init="
+      $watch('message', value => {
+        if (value) {
+          show = true;
+          setTimeout(() => show = false, 4000);
+        }
+      });
+      {% if message %}
+      message = '{{ message }}';
+      {% endif %}
+    "
+    class="bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg"
+  >
+    <span x-text="message"></span>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.addEventListener('alpine:init', () => {
+    Alpine.data('config', () => ({
+      activeSection: 'main-bot',
+      showConfirmModal() {
+        document.getElementById('confirmSaveModal').showModal();
+      },
+      init() {
+        // Update active section based on hash
+        const hash = window.location.hash;
+        if (hash) {
+          this.activeSection = hash.substring(1);
+        }
+
+        // Update hash when section changes
+        this.$watch('activeSection', value => {
+          window.location.hash = value;
+        });
+      }
+    }));
+  });
+</script>
+{% endblock %}

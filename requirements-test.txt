@@ -1,0 +1,8 @@
+# Test dependencies for the translator package.
+# test.bat installs ONLY this file, so pull in the runtime deps too.
+-r requirements.txt
+
+# Test framework
+pytest
+pytest-asyncio   # required by pytest.ini (asyncio_mode = auto)
+pytest-cov       # required by test.bat (pytest --cov=translator)

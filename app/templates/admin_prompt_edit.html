@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Prompt Template{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+<style>
+  .no-arrow::-ms-expand { display: none; }
+  .no-arrow {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: none;
+  }
+</style>
+{% endblock %}
+
+{% block header %}
+<div class="flex items-center gap-4">
+  {% set href = '/admin/config' %}
+  {% include 'components/back_button.html' %}
+  <h1 class="text-2xl font-bold">Edit Prompt Template</h1>
+</div>
+{% endblock %}
+
+      <!-- Main Content Container -->
+      <main class="flex-1 px-4 md:px-8 mb-8">
+        <!-- Prompt Template Card -->
+        <div class="bg-white shadow-lg rounded-lg p-6 mb-8">
+          <form id="save_form">
+            <div class="mb-4">
+              <label
+                for="prompt_text"
+                class="block text-gray-700 font-medium mb-2"
+                >Prompt Template</label
+              >
+              <textarea
+                id="prompt_text"
+                name="prompt_text"
+                rows="10"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >{{ current_prompt }}</textarea>
+            </div>
+            <button
+              type="button"
+              id="save_template_btn"
+              name="action"
+              value="save_prompt"
+              class="flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg transition text-sm sm:text-base"
+            >
+              <i class="fa-solid fa-floppy-disk mr-2"></i>
+              <span>Save Template</span>
+            </button>
+          </form>
+          <p class="text-gray-500 text-sm mt-4">
+            Edit the prompt template above and click "Save Template" to update the translation prompt.
+          </p>
+        </div>
+
+        <!-- Confirmation Modal for Save -->
+        <dialog
+          id="confirmSaveModal"
+          class="rounded-lg shadow-xl w-full max-w-md"
+        >
+          <form method="dialog" class="bg-white rounded-lg">
+            <div class="flex justify-between items-center border-b px-4 py-2">
+              <h5 class="text-lg font-semibold">Confirm Save</h5>
+              <button
+                type="button"
+                class="text-gray-400 hover:text-gray-600 text-2xl font-bold"
+                onclick="document.getElementById('confirmSaveModal').close()"
+              >
+                &times;
+              </button>
+            </div>
+            <div class="px-4 py-4 text-sm sm:text-base">
+              Are you sure you want to save the template?
+            </div>
+            <div class="flex justify-end gap-2 border-t px-4 py-2">
+              <button
+                type="button"
+                class="px-4 py-2 bg-gray-300 rounded-lg hover:bg-gray-400 transition text-sm sm:text-base"
+                onclick="document.getElementById('confirmSaveModal').close()"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                id="confirm_save_btn"
+                class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm sm:text-base"
+              >
+                Confirm
+              </button>
+            </div>
+          </form>
+        </dialog>
+
+        <!-- Success Toast -->
+        <div
+          id="successToast"
+          class="fixed top-5 right-5 z-50 hidden bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg w-11/12 max-w-xs text-sm sm:text-base"
+        >
+          Template saved successfully. Please reload the task for changes to take effect.
+          <button
+            type="button"
+            class="ml-2 text-white hover:text-gray-200 font-bold"
+            onclick="document.getElementById('successToast').classList.add('hidden')"
+          >
+            &times;
+          </button>
+        </div>
+
+        <hr class="my-6 border-gray-300" />
+
+        <!-- Test Translation Card -->
+        <div class="bg-white shadow-lg rounded-lg p-6 mb-8">
+          <h2 class="text-xl sm:text-2xl font-semibold mb-4">Test Translation</h2>
+          <div class="flex flex-col md:flex-row gap-6">
+            <!-- Input Column -->
+            <div class="md:w-1/2">
+              <form
+                id="translation_form"
+                method="POST"
+                action="/admin/test_translation"
+                class="flex flex-col"
+              >
+                <div class="mb-4">
+                  <label
+                    for="test_message"
+                    class="block text-gray-700 font-medium mb-2"
+                    >Type to Translate</label
+                  >
+                  <textarea
+                    id="test_message"
+                    name="test_message"
+                    rows="10"
+                    placeholder="Enter message to translate..."
+                    class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-green-500"
+                    style="height: 300px;"
+                  >{{ sample_data|default("") }}</textarea>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    type="submit"
+                    id="translate_button"
+                    class="flex items-center justify-center bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition text-sm sm:text-base"
+                  >
+                    <i class="fa-solid fa-language mr-2"></i>
+                    <span>Translate</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="clear_test_message"
+                    class="flex items-center justify-center bg-gray-400 hover:bg-gray-500 text-white px-4 py-2 rounded-lg transition text-sm sm:text-base"
+                  >
+                    <i class="fa-solid fa-eraser mr-2"></i>
+                    <span>Clear</span>
+                  </button>
+                </div>
+              </form>
+              <form
+                method="POST"
+                action="/admin/get_last_telegram_post"
+                class="mt-4"
+              >
+                <button
+                  type="submit"
+                  class="flex items-center justify-center bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition text-sm sm:text-base"
+                >
+                  <i class="fa-brands fa-telegram-plane mr-2"></i>
+                  <span>Retrieve Last Telegram Post</span>
+                </button>
+              </form>
+            </div>
+            <!-- Output Column -->
+            <div class="md:w-1/2 relative">
+              <label
+                for="translation_result"
+                class="block text-gray-700 font-medium mb-2"
+                >Translated Result</label
+              >
+              <div
+                id="translation_result"
+                class="border border-gray-300 rounded-lg bg-gray-50 p-3 h-[300px] overflow-y-auto text-sm sm:text-base"
+              >
+                {% if translation_result %}
+                  <p>{{ translation_result|safe }}</p>
+                {% else %}
+                  <p class="text-gray-400">
+                    Translation result will appear here.
+                  </p>
+                {% endif %}
+              </div>
+              <button
+                type="button"
+                id="clear_translation_result"
+                class="flex items-center justify-center bg-red-600 hover:bg-red-700 text-white px-4 py-1 rounded-lg absolute bottom-2 right-2 transition text-sm sm:text-base"
+              >
+                <i class="fa-solid fa-trash-can mr-1"></i>
+                <span>Clear Result</span>
+              </button>
+            </div>
+          </div>
+          <p class="text-gray-500 text-sm mt-4">
+            Use this section to test your prompt template. Enter a message and click "Translate" to see the result.
+          </p>
+        </div>
+      </main>
+    </div>
+
+    <!-- Spinner Loader Include -->
+    {% set spinner_text = "Translating... Please wait. This may take a few seconds." %}
+    {% include 'components/spinner_loader.html' %}
+
+    <script>
+      // Clear the test message textarea
+      document
+        .getElementById("clear_test_message")
+        .addEventListener("click", function () {
+          document.getElementById("test_message").value = "";
+        });
+
+      // Clear the translation result container
+      document
+        .getElementById("clear_translation_result")
+        .addEventListener("click", function () {
+          document.getElementById("translation_result").innerHTML =
+            '<p class="text-gray-400">Translation result will appear here.</p>';
+        });
+
+      // Show spinner when translating
+      document
+        .getElementById("translation_form")
+        .addEventListener("submit", function (event) {
+          event.preventDefault();
+          var spinner = document.getElementById("loading_spinner");
+          var spinnerText = document.getElementById("loading_spinner_text");
+          if (spinnerText) {
+            spinnerText.textContent =
+              "Translating... Please wait. This may take a few seconds.";
+          }
+          if (spinner) spinner.classList.remove("hidden");
+          this.submit();
+        });
+
+      // Show confirmation modal on Save Template click
+      document
+        .getElementById("save_template_btn")
+        .addEventListener("click", function () {
+          document.getElementById("confirmSaveModal").showModal();
+        });
+
+      // On confirm, send AJAX to save prompt
+      document
+        .getElementById("confirm_save_btn")
+        .addEventListener("click", function () {
+          document.getElementById("confirmSaveModal").close();
+          var formData = new FormData(document.getElementById("save_form"));
+          fetch("/admin/save_prompt", {
+            method: "POST",
+            body: formData,
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.message) {
+                var toastEl = document.getElementById("successToast");
+                toastEl.classList.remove("hidden");
+                setTimeout(function () {
+                  toastEl.classList.add("hidden");
+                }, 4000);
+              } else if (data.error) {
+                alert("Error: " + data.error);
+              }
+            })
+            .catch((error) => {
+              console.error("Error:", error);
+              alert("An error occurred while saving the template.");
+            });
+        });
+    </script>
+  </body>
+</html>

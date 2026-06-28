@@ -1,0 +1,15 @@
+# Telegram API clients
+pyrogram
+python-telegram-bot
+
+# HTTP requests
+requests
+
+# For configuration
+python-dotenv
+
+# For Anthropic API
+anthropic
+
+# Dataclasses (standard in Python 3.7+, but included for completeness)
+dataclasses; python_version < '3.7'

@@ -1,0 +1,13 @@
+{% macro nested_sidebar_link(href, label, is_active=false) %}
+<a href="{{ href }}"
+   class="flex items-center gap-2 transition-colors duration-200 rounded-lg px-2 py-1.5 hover:bg-gray-200 {% if is_active %}bg-gray-200 text-gray-900{% else %}text-gray-600{% endif %}"
+   x-bind:class="{ 'justify-center': sidebarCollapsed }"
+   @mouseenter="if (sidebarCollapsed) $tooltip('{{ label }}')"
+   @mouseleave="if (sidebarCollapsed) $tooltip()"
+>
+  <div class="w-1 h-1 rounded-full {% if is_active %}bg-gray-900{% else %}bg-gray-400{% endif %}"></div>
+  <span class="text-sm whitespace-nowrap transition-all duration-500 ease-in-out origin-left transform overflow-hidden"
+        x-bind:class="{ 'opacity-100 w-auto translate-x-0': !sidebarCollapsed, 'opacity-0 w-0 -translate-x-4': sidebarCollapsed }"
+  >{{ label }}</span>
+</a>
+{% endmacro %}

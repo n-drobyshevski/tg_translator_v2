@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+    <meta name="description" content="Translator Bot - Your automated assistant for translating and managing channel messages">
+    <meta name="theme-color" content="#2563eb">
+    <title>Home - Translator Bot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* Ensure base font size and smooth scrolling */
+      html {
+        font-size: 16px;
+        scroll-behavior: smooth;
+        -webkit-tap-highlight-color: transparent;
+      }
+      
+      /* Better touch targets on mobile */
+      @media (max-width: 640px) {
+        a, button {
+          min-height: 44px;
+          min-width: 44px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+      }
+      
+      /* Enhanced focus styles */
+      a:focus-visible {
+        outline: 2px solid #2563eb;
+        outline-offset: 2px;
+      }
+      
+      /* Prevent text size adjustment on orientation change */
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+      
+      /* Smooth transitions */
+      .animate-fade-in {
+        animation: fadeIn 0.5s ease-out;
+      }
+      
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  </head>  <body class="bg-gradient-to-br from-blue-50 to-gray-100 antialiased">
+    <main class="flex min-h-screen items-center justify-center px-4 py-12 sm:px-6 sm:py-16 md:py-20">      <div class="relative w-full max-w-lg">
+        <!-- Decorative blobs with enhanced animations -->
+        <div class="absolute -left-4 top-0 h-72 w-72 animate-blob rounded-full bg-blue-300 opacity-20 mix-blend-multiply blur-xl filter"></div>
+        <div class="animation-delay-2000 absolute -right-4 top-0 h-72 w-72 animate-blob rounded-full bg-purple-300 opacity-20 mix-blend-multiply blur-xl filter"></div>
+        <div class="animation-delay-4000 absolute -bottom-8 left-20 h-72 w-72 animate-blob rounded-full bg-indigo-300 opacity-20 mix-blend-multiply blur-xl filter"></div>
+        
+        <!-- Content Card with entrance animation -->
+        <div class="animate-card relative overflow-hidden rounded-2xl bg-white/90 backdrop-blur-sm shadow-xl ring-1 ring-gray-900/5 p-6 sm:p-8 md:p-10">
+          <div class="flex flex-col items-center space-y-6 sm:space-y-8">
+            <!-- Interactive Logo/Icon -->
+            <div class="hover-animate rounded-full bg-gradient-to-r from-blue-600/10 to-indigo-600/10 p-3 transition-all duration-300 hover:from-blue-600/20 hover:to-indigo-600/20">
+              <svg class="h-8 w-8 sm:h-10 sm:w-10 text-blue-600 transform transition-transform duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                      d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
+              </svg>
+            </div>
+            
+            <!-- Title -->
+            <h1 class="text-center text-3xl font-extrabold tracking-tight text-gray-900 sm:text-4xl md:text-5xl">
+              Translator Bot
+            </h1>
+            
+            <!-- Description -->
+            <p class="max-w-sm text-center text-base text-gray-600 sm:text-lg md:text-xl">
+              Your automated assistant for translating and managing channel messages.
+            </p>
+              <!-- CTA Button with enhanced animations -->
+            <div class="flex w-full flex-col space-y-4 sm:flex-row sm:space-x-4 sm:space-y-0">
+              <a href="/admin"
+                 class="cta-button animate-pulse flex-1 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-3 text-base font-medium text-white shadow-md transition-all hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 sm:text-lg group"
+                 role="button">
+                <svg class="mr-2 -ml-1 h-5 w-5 transform transition-transform duration-300 ease-out group-hover:scale-110" 
+                     fill="none" 
+                     viewBox="0 0 24 24" 
+                     stroke="currentColor">
+                  <path stroke-linecap="round" 
+                        stroke-linejoin="round" 
+                        stroke-width="2" 
+                        d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span class="relative">
+                  Go to Admin Dashboard
+                  <span class="absolute bottom-0 left-0 h-0.5 w-0 bg-white transition-all duration-300 group-hover:w-full"></span>
+                </span>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>    <!-- Enhanced scroll-to-top button -->
+    <button 
+      onclick="scrollToTop()"
+      class="scroll-button fixed bottom-4 right-4 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 p-3 text-white shadow-lg transition-all duration-300 hover:shadow-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 sm:bottom-8 sm:right-8 group"
+      id="scrollTopBtn"
+      aria-label="Scroll to top"
+      style="display: none;">
+      <svg class="h-6 w-6 transform transition-transform duration-300 group-hover:-translate-y-1" 
+           fill="none" 
+           viewBox="0 0 24 24" 
+           stroke="currentColor">
+        <path stroke-linecap="round" 
+              stroke-linejoin="round" 
+              stroke-width="2" 
+              d="M5 10l7-7m0 0l7 7m-7-7v18" />
+      </svg>
+    </button>
+
+    <script>
+      // Debounced scroll handler
+      function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+          const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+          };
+          clearTimeout(timeout);
+          timeout = setTimeout(later, wait);
+        };
+      }
+
+      // Smooth scroll to top with easing
+      function scrollToTop() {
+        const c = document.documentElement.scrollTop || document.body.scrollTop;
+        if (c > 0) {
+          window.requestAnimationFrame(scrollToTop);
+          window.scrollTo(0, c - c / 8);
+        }
+      }
+
+      // Enhanced scroll button visibility logic
+      const handleScroll = debounce(() => {
+        const btn = document.getElementById('scrollTopBtn');
+        const scrolled = document.documentElement.scrollTop || document.body.scrollTop;
+        
+        if (scrolled > 100) {
+          btn.style.display = 'block';
+          setTimeout(() => btn.classList.add('visible'), 10);
+        } else {
+          btn.classList.remove('visible');
+          setTimeout(() => {
+            if (!btn.classList.contains('visible')) {
+              btn.style.display = 'none';
+            }
+          }, 300);
+        }
+      }, 100);
+
+      // Initialize animations
+      document.addEventListener('DOMContentLoaded', function() {
+        // Setup scroll handler
+        window.addEventListener('scroll', handleScroll, { passive: true });
+        
+        // Check user's motion preference
+        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+        
+        if (!prefersReducedMotion.matches) {
+          // Initialize blob animations with random starting positions
+          document.querySelectorAll('.animate-blob').forEach((blob, index) => {
+            const randomDelay = Math.random() * -20;
+            blob.style.animationDelay = `${randomDelay}s`;
+          });
+
+          // Add entrance animation class to card
+          document.querySelector('.animate-card').style.animationDelay = '0.2s';
+        }
+      });
+    </script>    <style>
+      /* Respect user's motion preferences */
+      @media (prefers-reduced-motion: reduce) {
+        *, ::before, ::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+          scroll-behavior: auto !important;
+        }
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        /* Enhanced blob animations */
+        @keyframes blob-float {
+          0% { transform: translate(0, 0) rotate(0) scale(1); }
+          33% { transform: translate(10px, -10px) rotate(120deg) scale(1.1); }
+          66% { transform: translate(-10px, 10px) rotate(240deg) scale(1); }
+          100% { transform: translate(0, 0) rotate(360deg) scale(1); }
+        }
+
+        /* Card entrance animation */
+        @keyframes card-enter {
+          0% { 
+            opacity: 0;
+            transform: translateY(20px) scale(0.95);
+            filter: blur(8px);
+          }
+          100% { 
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0);
+          }
+        }
+
+        /* Button hover animation */
+        @keyframes button-glow {
+          0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
+          70% { box-shadow: 0 0 0 10px rgba(37, 99, 235, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+        }
+
+        /* Logo spin animation */
+        @keyframes logo-spin {
+          0% { transform: rotate(0deg); }
+          25% { transform: rotate(-10deg); }
+          75% { transform: rotate(10deg); }
+          100% { transform: rotate(0deg); }
+        }
+
+        /* Apply animations */
+        .animate-card {
+          animation: card-enter 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+        }
+
+        .animate-blob {
+          animation: blob-float 20s ease-in-out infinite;
+          will-change: transform;
+        }
+
+        .animation-delay-2000 {
+          animation-delay: 2s;
+        }
+
+        .animation-delay-4000 {
+          animation-delay: 4s;
+        }
+
+        /* Interactive animations */
+        .hover-animate:hover svg {
+          animation: logo-spin 0.6s ease-in-out;
+        }
+
+        .cta-button {
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .cta-button:hover {
+          transform: translateY(-2px);
+        }
+
+        .cta-button:active {
+          transform: translateY(0);
+        }
+
+        .cta-button.animate-pulse {
+          animation: button-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        /* Scroll to top button animation */
+        .scroll-button {
+          opacity: 0;
+          transform: translateY(20px);
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .scroll-button.visible {
+          opacity: 1;
+          transform: translateY(0);
+        }
+
+        .scroll-button:hover {
+          transform: translateY(-2px);
+        }
+      }
+    </style>
+  </body>
+</html>

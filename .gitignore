@@ -1,0 +1,101 @@
+# Byte-compiled / optimized / DLL files
+*__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+*.env
+
+# Pytest
+.cache/
+.pytest_cache/
+
+# pytest coverage
+.coverage
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Jupyter/IPython
+.ipynb_checkpoints
+
+# VSCode and other IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# PyCharm
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Mac and Windows system files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+Desktop.ini
+
+# mypy, pylint, and other static analysis tools
+.mypy_cache/
+.pylint.d/
+.pyre/
+
+# Env files
+.env
+.env.*
+
+# Logs and local state
+*.log
+*.pid
+
+# Local cache/data for your translator app (runtime state)
+translator/cache/
+translator/services/cache/
+translator/services/channel_cache.json
+translator/services/stats.json
+
+# Test output and reports
+htmlcov/
+coverage/
+*.log
+*.tmp
+*.bak
+
+# Ignore test-generated files
+test-output/
+
+my-bot.session*
+bot.session*
