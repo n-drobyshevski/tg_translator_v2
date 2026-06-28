@@ -69,6 +69,7 @@ def _fmt_uptime(start_ts: Optional[float]) -> str:
 
 HELP_TEXT = (
     "<b>Relay bot — admin commands</b>\n"
+    "/menu — open the button menu (easiest)\n"
     "/help — this message\n"
     "/status — uptime, channels, queue depth\n"
     "/stats [days] — relay counts &amp; failures (default 7)\n"
@@ -83,7 +84,8 @@ HELP_TEXT = (
     "/addchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt; [src_name] [dst_name]\n"
     "/editchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt;\n"
     "/removechannel &lt;name&gt;\n"
-    "/reload — re-read .env + prompt template"
+    "/reload — re-read .env + prompt template\n"
+    "(/setprompt, /addchannel, /editchannel need typed input)"
 )
 
 
@@ -362,9 +364,14 @@ async def handle_command(
     pyro=None,
 ) -> str:
     """Parse one admin DM and return the reply text (HTML). Never raises."""
+    from translator.services import admin_menu  # lazy: avoid import cycle
+
     text = (getattr(msg, "text", None) or "").strip()
+    # A persistent reply-keyboard tap arrives as label text (e.g. "📊 Status");
+    # map it back to the command it stands for.
+    text = admin_menu.resolve_button_label(text) or text
     if not text.startswith("/"):
-        return "Send /help for the command list."
+        return "Send /help for the command list, or /menu for buttons."
     first = text.split(maxsplit=1)[0]
     cmd = first.split("@", 1)[0].lower()  # tolerate /cmd@BotName
     args = text.split()[1:]
@@ -430,9 +437,43 @@ def register_admin_handlers(
     start_ts=None,
 ):
     """Register the private-DM admin command handler on the Pyrogram client."""
+    from translator.services import admin_menu  # lazy: avoid import cycle
 
     @pyro.on_message(filters.private & _admin_filter())
     async def _dispatch(client, msg):  # noqa: ANN001
+        text = (getattr(msg, "text", None) or "").strip()
+        resolved = admin_menu.resolve_button_label(text) or text
+        token = (
+            resolved.split(maxsplit=1)[0].split("@", 1)[0].lower()
+            if resolved.startswith("/")
+            else ""
+        )
+        # Menu-bearing entrypoints attach a keyboard, so they bypass the plain
+        # text-reply path of handle_command.
+        if token in ("/menu", "/start"):
+            try:
+                await msg.reply_text(
+                    admin_menu.MENU_GREETING,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=admin_menu.to_reply_markup(
+                        admin_menu.build_reply_keyboard()
+                    ),
+                )
+            except Exception:
+                log.exception("failed to send menu")
+            return
+        if token == "/settings":
+            title, rows = admin_menu.settings_entry()
+            try:
+                await msg.reply_text(
+                    title,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=admin_menu.to_inline_markup(rows),
+                )
+            except Exception:
+                log.exception("failed to send settings menu")
+            return
+
         try:
             reply = await handle_command(
                 msg,
@@ -452,5 +493,10 @@ def register_admin_handlers(
             )
         except Exception:
             log.exception("failed to send admin reply")
+
+    # Inline-button presses (the Settings tree) arrive as callback queries.
+    admin_menu.register_callback_handler(
+        pyro, start_ts=start_ts, query_queue=query_queue
+    )
 
     return _dispatch
