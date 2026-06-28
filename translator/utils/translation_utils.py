@@ -1,6 +1,7 @@
 import asyncio
-from typing import Any, Dict, Tuple
-from anthropic import Anthropic
+import inspect
+from typing import Any, Dict, Tuple, Union
+from anthropic import Anthropic, AsyncAnthropic
 import logging
 import re
 from translator.config import CONFIG, load_prompt_template
@@ -38,11 +39,20 @@ def build_messages(html_text: str) -> Tuple[str, str]:
     return system, user
 
 
-async def translate_html(client: Anthropic, payload: Dict[str, Any]) -> str:
+async def translate_html(
+    client: Union[Anthropic, AsyncAnthropic], payload: Dict[str, Any]
+) -> str:
     """Send payload to Anthropic and return translated text.
 
-    The Anthropic SDK call is synchronous (blocking); it is run in a worker
-    thread via ``asyncio.to_thread`` so it never blocks the bot's event loop.
+    Works with either SDK client and never blocks the event loop:
+
+    * an ``AsyncAnthropic`` (the bot path) is awaited directly — no thread;
+    * a synchronous ``Anthropic`` (the Flask path, which can't share an async
+      client across its per-request loops) is run via ``asyncio.to_thread``.
+
+    The two are told apart by whether ``messages.create`` is a coroutine
+    function, so test doubles work without subclassing the SDK.
+
     Model and params come from ``CONFIG`` so they can be changed via env vars
     without touching code (e.g. when a model is deprecated).
 
@@ -53,8 +63,8 @@ async def translate_html(client: Anthropic, payload: Dict[str, Any]) -> str:
     caching engages automatically if the template later grows past the minimum.
     """
     system_prompt, user_text = build_messages(payload["Html"])
-    resp = await asyncio.to_thread(
-        client.messages.create,
+    create = client.messages.create
+    kwargs = dict(
         model=CONFIG.ANTHROPIC_MODEL,
         max_tokens=CONFIG.ANTHROPIC_MAX_TOKENS,
         temperature=CONFIG.ANTHROPIC_TEMPERATURE,
@@ -67,6 +77,10 @@ async def translate_html(client: Anthropic, payload: Dict[str, Any]) -> str:
         ],
         messages=[{"role": "user", "content": user_text}],
     )
+    if inspect.iscoroutinefunction(create):
+        resp = await create(**kwargs)
+    else:
+        resp = await asyncio.to_thread(create, **kwargs)
     # Claude 4+ can return stop_reason="refusal" with an EMPTY content array;
     # indexing resp.content[0] would then raise IndexError. Guard explicitly and
     # raise a non-retryable ValueError (a refusal is deterministic for the same

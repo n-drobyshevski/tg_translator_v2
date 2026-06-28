@@ -1,23 +1,42 @@
+import logging
 from html import escape
 from typing import Any, Dict, List, Optional, Tuple
 
+logger = logging.getLogger("MEDIA")
+
+
 def get_media_info(msg, max_size: int) -> Tuple[Optional[str], Optional[int], str]:
-    """Extract file_id, file_size_bytes, media_type from message."""
+    """Extract ``(file_id, file_size_bytes, media_type)`` from a message.
+
+    The Bot API can only fetch files up to ``max_size`` (20 MB), so anything
+    larger can't be re-sent and the post is relayed as text only. Previously that
+    drop was silent; now it is logged at WARNING so an operator can see why the
+    media is missing from the English channel.
+    """
     file_id = None
     file_size_bytes = None
     media_type = "text"
-    if msg.document and msg.document.file_size <= max_size:
-        file_id = msg.document.file_id
-        file_size_bytes = msg.document.file_size
-        media_type = "doc"
-    elif msg.photo and getattr(msg.photo, "file_size", 0) <= max_size:
-        file_id = msg.photo.file_id
-        file_size_bytes = getattr(msg.photo, "file_size", None)
-        media_type = "photo"
-    elif msg.video and msg.video.file_size <= max_size:
-        file_id = msg.video.file_id
-        file_size_bytes = msg.video.file_size
-        media_type = "video"
+    # A message carries at most one of these; first present wins.
+    for kind, attr in (("doc", "document"), ("photo", "photo"), ("video", "video")):
+        media = getattr(msg, attr, None)
+        if not media:
+            continue
+        size = getattr(media, "file_size", 0) or 0
+        if size <= max_size:
+            file_id = media.file_id
+            file_size_bytes = getattr(media, "file_size", None)
+            media_type = kind
+        else:
+            logger.warning(
+                "Skipping %s of %d bytes (over the %d-byte Bot API limit) in "
+                "chat %s msg %s; relaying text only.",
+                kind,
+                size,
+                max_size,
+                getattr(getattr(msg, "chat", None), "id", "?"),
+                getattr(msg, "id", "?"),
+            )
+        break
     return file_id, file_size_bytes, media_type
 
 def build_payload(msg, html_text: str, meta: Dict[str, Any]) -> Dict[str, Any]:

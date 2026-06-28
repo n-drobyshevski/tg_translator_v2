@@ -48,7 +48,9 @@ class Config:
         self.ANTHROPIC_API_KEY = self._require("ANTHROPIC_API_KEY")
         # Translation model + params (env-overridable so future model swaps need no code change).
         # NOTE: claude-3-haiku-20240307 was retired 2026-04-20; the default below is its
-        # Anthropic-recommended replacement.
+        # Anthropic-recommended replacement. claude-haiku-4-5 is still Anthropic's current
+        # fast/cheap tier as of 2026-06 (alias auto-tracks the latest snapshot; pin
+        # ANTHROPIC_MODEL=claude-haiku-4-5-20251022 if you need a fixed snapshot).
         self.ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
         self.ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "1500"))
         self.ANTHROPIC_TEMPERATURE = float(os.getenv("ANTHROPIC_TEMPERATURE", "0"))

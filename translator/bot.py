@@ -26,10 +26,10 @@ import time
 import sqlite3
 from typing import Any, Dict, Tuple
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from translator.config import CONFIG, CACHE_DIR
 from translator.models import MetadataRequest
-from translator.services.anthropic_client import get_anthropic_client
+from translator.services.anthropic_client import get_async_anthropic_client
 
 from pyrogram import filters
 from pyrogram.client import Client
@@ -191,7 +191,10 @@ async def ptb_worker(ptb_app: Application, stop_event: asyncio.Event):
 
 
 def register_handlers(
-    pyro: Client, anthropic: Anthropic, sender: TelegramSender, recorder: EventRecorder
+    pyro: Client,
+    anthropic: AsyncAnthropic,
+    sender: TelegramSender,
+    recorder: EventRecorder,
 ):
     max_size = 20 * 1024 * 1024
 
@@ -231,11 +234,17 @@ def register_handlers(
                 recorder.set(file_path=file_obj["file_path"])
             html_text = entities_to_html(text, msg.entities or msg.caption_entities)
         except asyncio.TimeoutError:
-            pyro_log.warning("PTB worker timed out after %ss; degrading metadata", META_TIMEOUT)
+            pyro_log.warning(
+                "PTB worker timed out after %ss for chat %s msg %s; degrading "
+                "metadata (no source link / file download link this post)",
+                META_TIMEOUT,
+                msg.chat.id,
+                msg.id,
+            )
             meta = {}
             html_text = entities_to_html(text, msg.entities or msg.caption_entities)
         except Exception as e:
-            pyro_log.warning("!!! PTB worker failed: %s", e)
+            pyro_log.warning("!!! PTB worker failed for chat %s msg %s: %s", msg.chat.id, msg.id, e)
             meta = {}
             html_text = text
 
@@ -355,11 +364,17 @@ def register_handlers(
             meta = await asyncio.wait_for(req.response, timeout=META_TIMEOUT)
             html_text = entities_to_html(text, msg.entities or msg.caption_entities)
         except asyncio.TimeoutError:
-            pyro_log.warning("PTB worker timed out after %ss; degrading metadata", META_TIMEOUT)
+            pyro_log.warning(
+                "PTB worker timed out after %ss for chat %s msg %s; degrading "
+                "metadata (no source link / file download link this edit)",
+                META_TIMEOUT,
+                msg.chat.id,
+                msg.id,
+            )
             meta = {}
             html_text = entities_to_html(text, msg.entities or msg.caption_entities)
         except Exception as e:
-            pyro_log.warning("!!! PTB worker failed: %s", e)
+            pyro_log.warning("!!! PTB worker failed for chat %s msg %s: %s", msg.chat.id, msg.id, e)
             meta = {}
             html_text = text
 
@@ -522,7 +537,7 @@ async def main_async():
 
 
 def init_clients() -> (
-    Tuple[Client, Application, Anthropic, TelegramSender, EventRecorder]
+    Tuple[Client, Application, AsyncAnthropic, TelegramSender, EventRecorder]
 ):
     pyro = Client(
         "bot",
@@ -538,7 +553,10 @@ def init_clients() -> (
             pass
     ptb_app = builder.build()
     recorder = EventRecorder()
-    anthropic_client = get_anthropic_client()
+    # Async client: the bot runs on a single long-lived event loop, so awaiting
+    # translations directly (no thread offload) is safe here. Created inside the
+    # bot loop via main_async → init_clients.
+    anthropic_client = get_async_anthropic_client()
     sender = TelegramSender()
     return pyro, ptb_app, anthropic_client, sender, recorder
 

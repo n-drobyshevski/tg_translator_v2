@@ -22,6 +22,19 @@ def test_get_media_info_large_file():
     assert get_media_info(msg, 1) == (None, None, "text")
 
 
+def test_get_media_info_large_file_logs_warning(caplog):
+    # Oversized media must be skipped *and* logged, not silently dropped.
+    doc = SimpleNamespace(file_id="id", file_size=5000)
+    msg = DummyMsg(
+        document=doc, photo=None, video=None,
+        chat=SimpleNamespace(id=42), id=7,
+    )
+    with caplog.at_level("WARNING"):
+        result = get_media_info(msg, 1)
+    assert result == (None, None, "text")
+    assert any("Skipping doc" in r.getMessage() for r in caplog.records)
+
+
 def test_build_payload_no_username():
     chat = SimpleNamespace(title="T", username=None)
     msg = DummyMsg(chat=chat, id=11, text=None, caption="c")

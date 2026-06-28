@@ -14,6 +14,11 @@ _SPOILER_OPEN_RE = re.compile(r"<spoiler>")
 _SPOILER_CLOSE_RE = re.compile(r"</spoiler>")
 _TG_EMOJI_RE = re.compile(r"<tg-emoji\b[^>]*>(.*?)</tg-emoji>", re.DOTALL)
 _TG_TIME_RE = re.compile(r"<tg-time\b[^>]*>(.*?)</tg-time>", re.DOTALL)
+# A code block carrying a language: kurigram emits ``<pre language="x">…</pre>``,
+# which the Bot API rejects. The Bot API expresses a language via a nested
+# ``<code class="language-x">`` instead, so rewrite the whole block.
+_PRE_LANG_RE = re.compile(r'<pre language="([^"]*)">(.*?)</pre>', re.DOTALL)
+# Any remaining ``<pre …>`` (no language, or other stray attrs) → bare ``<pre>``.
 _PRE_OPEN_RE = re.compile(r"<pre\b[^>]*>")
 
 
@@ -21,16 +26,23 @@ def _to_bot_api_html(rendered: str) -> str:
     """Normalize kurigram-rendered HTML to the subset the Bot API accepts.
 
     - ``<spoiler>`` → ``<tg-spoiler>`` (Bot API spelling).
-    - Drop ``<tg-emoji>`` / ``<tg-time>`` wrappers, keeping their inner text
-      (custom emoji can't be re-sent without owning the emoji; formatted dates
-      aren't Bot API HTML).
-    - Strip the non-standard ``language`` attribute from ``<pre>`` so the parser
-      doesn't reject the tag.
+    - Drop ``<tg-emoji>`` / ``<tg-time>`` wrappers, keeping their inner text.
+      This is intentional, not a gap: a bot can't re-send a custom emoji it
+      doesn't own, and the Bot API HTML dialect has no date tag — so the inner
+      fallback text (the emoji glyph / the formatted date) is the correct output.
+    - ``<pre language="x">…</pre>`` → ``<pre><code class="language-x">…</code></pre>``
+      so code-block syntax highlighting survives (the Bot API's supported form);
+      bare/attribute-only ``<pre>`` tags are flattened to ``<pre>``.
     """
     rendered = _SPOILER_OPEN_RE.sub("<tg-spoiler>", rendered)
     rendered = _SPOILER_CLOSE_RE.sub("</tg-spoiler>", rendered)
     rendered = _TG_EMOJI_RE.sub(r"\1", rendered)
     rendered = _TG_TIME_RE.sub(r"\1", rendered)
+    rendered = _PRE_LANG_RE.sub(
+        lambda m: f'<pre><code class="language-{html.escape(m.group(1), quote=True)}">'
+        f"{m.group(2)}</code></pre>",
+        rendered,
+    )
     rendered = _PRE_OPEN_RE.sub("<pre>", rendered)
     return rendered
 

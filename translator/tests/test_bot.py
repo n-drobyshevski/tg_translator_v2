@@ -3,7 +3,7 @@ import asyncio
 import types
 from unittest.mock import MagicMock
 from pyrogram.client import Client
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 from telegram.ext import Application, ApplicationBuilder
 from translator.services.telegram_sender import TelegramSender
 from translator.services.event_logger import EventRecorder
@@ -21,7 +21,7 @@ def test_init_clients_smoke(monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-    class DummyAnthropic(Anthropic):
+    class DummyAnthropic(AsyncAnthropic):
         def __init__(self, *args, **kwargs):
             pass
 
@@ -56,7 +56,7 @@ def test_init_clients_smoke(monkeypatch):
 
     monkeypatch.setattr(bot, "Client", DummyClient)
     monkeypatch.setattr(bot, "Application", DummyApp)
-    monkeypatch.setattr(bot, "Anthropic", DummyAnthropic)
+    monkeypatch.setattr(bot, "AsyncAnthropic", DummyAnthropic)
     monkeypatch.setattr(bot, "TelegramSender", DummySender)
     monkeypatch.setattr(bot, "EventRecorder", DummyEventRecorder)
 

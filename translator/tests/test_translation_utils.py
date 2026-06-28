@@ -46,6 +46,31 @@ async def test_translate_html_makes_api_call():
 
 
 @pytest.mark.asyncio
+async def test_translate_html_awaits_async_client():
+    # An AsyncAnthropic-like client (coroutine `create`) must be awaited directly,
+    # not run through asyncio.to_thread — this is the bot's path.
+    captured = {}
+
+    class FakeAsyncMessages:
+        @staticmethod
+        async def create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(text="async translated!")],
+            )
+
+    class FakeAsyncClient:
+        messages = FakeAsyncMessages
+
+    payload = {"Html": "hi", "Channel": "x", "Link": "y"}
+    result = await translate_html(FakeAsyncClient, payload)
+    assert result == "async translated!"
+    assert captured["messages"][0]["role"] == "user"
+    assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
 async def test_translate_html_guards_refusal():
     class FakeMessages:
         @staticmethod

@@ -46,6 +46,20 @@ def test_entities_to_html_code_and_pre():
     assert "<code>" in result or "language=" in result
 
 
+def test_entities_to_html_pre_with_language_becomes_code_class():
+    # A code block with a language must use the Bot API's supported form
+    # (<pre><code class="language-x">), not kurigram's rejected <pre language="x">.
+    ents = [ent(0, 4, MessageEntityType.PRE, language="python")]
+    result = entities_to_html("code", ents)
+    assert result == '<pre><code class="language-python">code</code></pre>'
+
+
+def test_entities_to_html_pre_without_language_stays_bare():
+    ents = [ent(0, 4, MessageEntityType.PRE, language=None)]
+    result = entities_to_html("code", ents)
+    assert result == "<pre>code</pre>"
+
+
 def test_entities_to_html_text_link():
     ents = [ent(0, 4, MessageEntityType.TEXT_LINK, url="http://test.com")]
     result = entities_to_html("Test", ents)
