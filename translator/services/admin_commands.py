@@ -402,12 +402,22 @@ async def handle_command(
     return f"❓ Unknown command {html.escape(cmd)}. Send /help."
 
 
+def _is_admin(_f, _c, m) -> bool:
+    """Predicate for the admin filter; logs each private DM for observability."""
+    uid = getattr(getattr(m, "from_user", None), "id", None)
+    ok = uid is not None and uid in CONFIG.ADMIN_CHAT_IDS
+    log.info(
+        "DM private message: from_user_id=%s authorized=%s (admins=%s)",
+        uid,
+        ok,
+        CONFIG.ADMIN_CHAT_IDS,
+    )
+    return ok
+
+
 def _admin_filter():
     """Pyrogram filter matching DMs from any configured admin (read live)."""
-    return filters.create(
-        lambda _f, _c, m: bool(getattr(m, "from_user", None))
-        and m.from_user.id in CONFIG.ADMIN_CHAT_IDS
-    )
+    return filters.create(_is_admin)
 
 
 def register_admin_handlers(

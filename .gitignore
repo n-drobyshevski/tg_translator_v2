@@ -81,6 +81,9 @@ Desktop.ini
 *.log
 *.pid
 
+# Claude Code local harness state
+.claude/
+
 # Local cache/data for your translator app (runtime state)
 translator/cache/
 translator/services/cache/
