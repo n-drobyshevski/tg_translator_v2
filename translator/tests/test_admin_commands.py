@@ -6,15 +6,26 @@ import pytest
 
 import translator.config as config
 from translator.config import CONFIG
-from translator.services import admin_commands, admin_store, env_store
+from translator.services import (
+    admin_commands,
+    admin_prefs,
+    admin_store,
+    admin_wizard,
+    env_store,
+)
 
 
 class Msg:
     """Minimal stand-in for a Pyrogram message."""
 
-    def __init__(self, text, reply_to_message=None):
+    def __init__(self, text, reply_to_message=None, from_user=None):
         self.text = text
         self.reply_to_message = reply_to_message
+        self.from_user = from_user
+
+
+def _user(uid):
+    return types.SimpleNamespace(id=uid)
 
 
 class _Reply:
@@ -30,6 +41,9 @@ def admin_env(tmp_path, monkeypatch):
     monkeypatch.setattr(admin_store, "_labels_path", lambda: tmp_path / "labels.json")
     monkeypatch.setattr(admin_store, "resolve_name", lambda uid: None)
     admin_store._name_cache.clear()
+    # Keep per-admin language prefs in a temp file; reset wizard state.
+    monkeypatch.setattr(admin_prefs, "_prefs_path", lambda: tmp_path / "prefs.json")
+    admin_wizard._PENDING.clear()
     # Required config env.
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
@@ -264,3 +278,84 @@ async def test_stats_uses_events_dao(admin_env, monkeypatch):
     out = await admin_commands.handle_command(Msg("/stats 3"))
     assert "Relayed events: 2" in out
     assert "Failures: 1" in out
+
+
+# --- Add-channel wizard -------------------------------------------------------
+
+
+async def test_wizard_happy_path_adds_channel(admin_env):
+    u = _user(111)
+    admin_wizard.start(111)
+    r1 = await admin_commands.handle_command(Msg("news", from_user=u))
+    assert "2/3" in r1  # advanced to the source-id prompt
+    r2 = await admin_commands.handle_command(Msg("55", from_user=u))
+    assert "3/3" in r2  # advanced to the destination-id prompt
+    r3 = await admin_commands.handle_command(Msg("56", from_user=u))
+    assert r3.startswith("✅")
+    assert not admin_wizard.is_active(111)
+    assert CONFIG.get_channel_id("news") == 55
+    assert CONFIG.get_channel_id("news_en") == 56
+
+
+async def test_wizard_bad_name_reprompts(admin_env):
+    u = _user(111)
+    admin_wizard.start(111)
+    out = await admin_commands.handle_command(Msg("Bad Name", from_user=u))
+    assert out.startswith("❌")
+    assert admin_wizard.is_active(111)  # still on the name step
+
+
+async def test_wizard_duplicate_name_rejected(admin_env):
+    u = _user(111)
+    admin_wizard.start(111)
+    out = await admin_commands.handle_command(Msg("test", from_user=u))
+    assert out.startswith("❌")
+    assert admin_wizard.is_active(111)
+
+
+async def test_wizard_non_int_src_reprompts(admin_env):
+    u = _user(111)
+    admin_wizard.start(111)
+    await admin_commands.handle_command(Msg("news", from_user=u))
+    out = await admin_commands.handle_command(Msg("notanint", from_user=u))
+    assert out.startswith("❌")
+    assert admin_wizard.is_active(111)  # still awaiting the source id
+
+
+async def test_wizard_cancel_command(admin_env):
+    u = _user(111)
+    admin_wizard.start(111)
+    out = await admin_commands.handle_command(Msg("/cancel", from_user=u))
+    assert out.startswith("✅")
+    assert not admin_wizard.is_active(111)
+
+
+async def test_wizard_button_tap_escapes(admin_env):
+    u = _user(111)
+    admin_wizard.start(111)
+    # Tapping a reply-keyboard button mid-wizard abandons it and runs the command.
+    out = await admin_commands.handle_command(Msg("📊 Status", from_user=u))
+    assert not admin_wizard.is_active(111)
+    assert "Status" in out
+
+
+# --- Per-admin language -------------------------------------------------------
+
+
+async def test_setlang_persists_and_localizes(admin_env):
+    u = _user(111)
+    out = await admin_commands.handle_command(Msg("/setlang be", from_user=u))
+    assert out.startswith("✅")
+    assert admin_prefs.get_lang(111) == "be"
+    # A subsequent reply for this admin renders in Belarusian.
+    be_help = await admin_commands.handle_command(Msg("/help", from_user=u))
+    en_help = await admin_commands.handle_command(Msg("/help"))
+    assert be_help != en_help
+    assert "адмінскія каманды" in be_help
+
+
+async def test_setlang_rejects_unknown(admin_env):
+    u = _user(111)
+    out = await admin_commands.handle_command(Msg("/setlang xx", from_user=u))
+    assert out.startswith("❌")
+    assert admin_prefs.get_lang(111) == "en"

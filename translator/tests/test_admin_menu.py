@@ -3,7 +3,7 @@
 import pytest
 
 from translator.config import CONFIG
-from translator.services import admin_menu, admin_store, env_store
+from translator.services import admin_i18n, admin_menu, admin_prefs, admin_store, env_store
 
 
 @pytest.fixture
@@ -14,6 +14,7 @@ def admin_env(tmp_path, monkeypatch):
     monkeypatch.setattr(admin_store, "_labels_path", lambda: tmp_path / "labels.json")
     monkeypatch.setattr(admin_store, "resolve_name", lambda uid: None)
     admin_store._name_cache.clear()
+    monkeypatch.setattr(admin_prefs, "_prefs_path", lambda: tmp_path / "prefs.json")
     # Required config env.
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
@@ -201,3 +202,43 @@ def test_unknown_callback_falls_back(admin_env):
     res = admin_menu.handle_callback("garbage:data")
     assert res.rows is None
     assert "expired" in res.text.lower()
+
+
+# --- Localization -------------------------------------------------------------
+
+
+def test_resolve_belarusian_label_maps_to_command():
+    be_status = admin_i18n.t("btn_status", "be")
+    assert be_status != admin_i18n.t("btn_status", "en")
+    assert admin_menu.resolve_button_label(be_status) == "/status"
+
+
+def test_build_reply_keyboard_belarusian_resolves_back():
+    rows = admin_menu.build_reply_keyboard("be")
+    labels = [lbl for row in rows for lbl in row]
+    # Every rendered Belarusian label must still resolve to a command.
+    assert all(admin_menu.resolve_button_label(lbl) for lbl in labels)
+
+
+def test_nav_lang_lists_locales(admin_env):
+    res = admin_menu.handle_callback("nav:lang")
+    data = _flat_data(res.rows)
+    assert "setlang:en" in data
+    assert "setlang:be" in data
+
+
+def test_setlang_persists_and_rerenders(admin_env):
+    res = admin_menu.handle_callback("setlang:be", uid=111)
+    assert admin_prefs.get_lang(111) == "be"
+    # Re-renders the settings menu (still carries its nav rows).
+    assert "nav:close" in _flat_data(res.rows)
+
+
+def test_settings_has_language_entry(admin_env):
+    res = admin_menu.handle_callback("nav:settings")
+    assert "nav:lang" in _flat_data(res.rows)
+
+
+def test_channels_menu_has_add_button(admin_env):
+    title, rows = admin_menu.build_menu("channels")
+    assert "addch:start" in _flat_data(rows)

@@ -28,7 +28,14 @@ from typing import List, Optional
 from pyrogram import enums, filters
 
 from translator.config import CONFIG, PROMPT_TEMPLATE_PATH
-from translator.services import admin_store, env_store
+from translator.services import (
+    admin_i18n,
+    admin_prefs,
+    admin_store,
+    admin_wizard,
+    env_store,
+)
+from translator.services.admin_i18n import t
 from translator.utils.prompt_validation import validate_prompt
 from translator.utils.translation_utils import reload_prompt_template
 
@@ -46,6 +53,16 @@ _REPLY_LIMIT = 4000  # stay under Telegram's 4096 hard cap
 
 def _truncate(text: str, limit: int = _REPLY_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _lang_of(msg) -> str:
+    """Resolve the per-admin menu language for an incoming message.
+
+    The unit-test ``Msg`` has no ``from_user``, so this returns the default
+    (English) for every existing test, keeping their exact-substring assertions.
+    """
+    uid = getattr(getattr(msg, "from_user", None), "id", None)
+    return admin_prefs.get_lang(uid) if uid is not None else admin_i18n.DEFAULT_LANG
 
 
 def _logical_names() -> List[str]:
@@ -67,165 +84,136 @@ def _fmt_uptime(start_ts: Optional[float]) -> str:
     return f"{h}h {m}m {s}s"
 
 
-HELP_TEXT = (
-    "<b>Relay bot — admin commands</b>\n"
-    "/menu — open the button menu (easiest)\n"
-    "/help — this message\n"
-    "/status — uptime, channels, queue depth\n"
-    "/stats [days] — relay counts &amp; failures (default 7)\n"
-    "/channels — configured channel pairs\n"
-    "/prompt — current prompt template\n"
-    "/setmodel &lt;model&gt;\n"
-    "/settemp &lt;0..1&gt;\n"
-    "/setmaxtokens &lt;1..8192&gt;\n"
-    "/setloglevel &lt;DEBUG|INFO|WARNING|ERROR|CRITICAL&gt;\n"
-    "/setprompt &lt;template&gt; (multi-line, or reply to a message)\n"
-    "/addchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt; [src_name] [dst_name]\n"
-    "/editchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt;\n"
-    "/removechannel &lt;name&gt;\n"
-    "/admins — list admins\n"
-    "/addadmin &lt;user_id|@username&gt; [label]\n"
-    "/removeadmin &lt;user_id&gt;\n"
-    "/reload — re-read .env + prompt template\n"
-    "(/setprompt, /addchannel, /editchannel need typed input)"
-)
+def _cmd_help(lang: str = "en") -> str:
+    return t("help_text", lang)
 
 
-def _cmd_help() -> str:
-    return HELP_TEXT
-
-
-def _cmd_status(start_ts, query_queue, pyro) -> str:
+def _cmd_status(start_ts, query_queue, pyro, lang: str = "en") -> str:
     connected = getattr(pyro, "is_connected", None)
     qsize = query_queue.qsize() if query_queue is not None else "?"
     sources = CONFIG.get_source_channel_ids()
-    lines = [
-        "<b>Status</b>",
-        f"Uptime: {_fmt_uptime(start_ts)}",
-        f"Pyrogram connected: {connected}",
-        f"Source channels: {len(sources)}",
-        f"Metadata queue depth: {qsize}",
-        f"Model: {html.escape(str(CONFIG.ANTHROPIC_MODEL))}",
-    ]
-    return "\n".join(lines)
+    return t(
+        "status",
+        lang,
+        uptime=_fmt_uptime(start_ts),
+        connected=connected,
+        sources=len(sources),
+        queue=qsize,
+        model=html.escape(str(CONFIG.ANTHROPIC_MODEL)),
+    )
 
 
-def _cmd_stats(args: List[str]) -> str:
+def _cmd_stats(args: List[str], lang: str = "en") -> str:
     days = 7
     if args:
         try:
             days = int(args[0])
         except ValueError:
-            return "❌ Usage: /stats [days]"
+            return t("stats_usage", lang)
         if not 1 <= days <= 30:
-            return "❌ days must be 1..30"
+            return t("stats_days_range", lang)
     try:
         from translator.db import events_dao
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         messages = events_dao.load_messages(since_iso=cutoff)
     except Exception as exc:  # pragma: no cover - defensive
-        return f"❌ Stats unavailable: {html.escape(str(exc))}"
+        return t("stats_unavailable", lang, err=html.escape(str(exc)))
 
     total = len(messages)
     failures = sum(1 for m in messages if not m.get("posting_success"))
     by_channel = Counter(m.get("source_channel_name") or "?" for m in messages)
-    lines = [
-        f"<b>Stats — last {days}d</b>",
-        f"Relayed events: {total}",
-        f"Failures: {failures}",
-        "",
-        "<b>By source channel</b>",
-    ]
+    lines = [t("stats_header", lang, days=days, total=total, failures=failures)]
     if by_channel:
         lines += [
             f"{html.escape(str(name))}: {count}"
             for name, count in by_channel.most_common()
         ]
     else:
-        lines.append("(none)")
+        lines.append(t("common_none", lang))
     return "\n".join(lines)
 
 
-def _config_summary() -> str:
+def _config_summary(lang: str = "en") -> str:
     """Current non-secret settings as value lines (no header).
 
     Rendered inside the Settings menu (see :mod:`translator.services.admin_menu`),
     which supplies its own ``⚙️ Settings`` title. Labels mirror the submenu wording.
     """
     d = CONFIG.as_dict()
-    lines = [
-        f"Model: {html.escape(str(d['ANTHROPIC_MODEL']))}",
-        f"Temperature: {d['ANTHROPIC_TEMPERATURE']}",
-        f"Max Tokens: {d['ANTHROPIC_MAX_TOKENS']}",
-        f"Log Level: {html.escape(str(d['LOG_LEVEL']))}",
-        f"Admin IDs: {d['ADMIN_CHAT_IDS']}",
-        f"Channels: {html.escape(', '.join(d['LOGICAL_CHANNELS']))}",
-    ]
-    return "\n".join(lines)
+    return t(
+        "cfg_summary",
+        lang,
+        model=html.escape(str(d["ANTHROPIC_MODEL"])),
+        temp=d["ANTHROPIC_TEMPERATURE"],
+        tokens=d["ANTHROPIC_MAX_TOKENS"],
+        log=html.escape(str(d["LOG_LEVEL"])),
+        admins=d["ADMIN_CHAT_IDS"],
+        channels=html.escape(", ".join(d["LOGICAL_CHANNELS"])),
+    )
 
 
-def _cmd_channels() -> str:
-    lines = ["<b>Channel pairs</b>"]
+def _cmd_channels(lang: str = "en") -> str:
+    lines = [t("channels_title", lang)]
     for name in _logical_names():
         src = CONFIG.channels[name]
         dst = CONFIG.channels.get(name + "_en")
         dst_id = dst.channel_id if dst else "—"
         lines.append(
-            f"{html.escape(name)}: src {src.channel_id} → dst {dst_id}"
+            t("channels_line", lang, name=html.escape(name), src=src.channel_id, dst=dst_id)
         )
     if len(lines) == 1:
-        lines.append("(none)")
+        lines.append(t("common_none", lang))
     return "\n".join(lines)
 
 
-def _cmd_prompt() -> str:
+def _cmd_prompt(lang: str = "en") -> str:
     if not PROMPT_TEMPLATE_PATH.exists():
-        return "(no prompt template file)"
+        return t("prompt_none", lang)
     text = PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
-    return "<b>Prompt template</b>\n<pre>" + html.escape(_truncate(text, 3500)) + "</pre>"
+    return t("prompt_body", lang, body=html.escape(_truncate(text, 3500)))
 
 
-def _cmd_setmodel(args: List[str]) -> str:
+def _cmd_setmodel(args: List[str], lang: str = "en") -> str:
     if len(args) != 1 or not args[0].strip():
-        return "❌ Usage: /setmodel &lt;model&gt;"
+        return t("setmodel_usage", lang)
     model = args[0].strip()
     _persist_and_reload("ANTHROPIC_MODEL", model)
-    return f"✅ ANTHROPIC_MODEL = {html.escape(model)}"
+    return t("setmodel_ok", lang, model=html.escape(model))
 
 
-def _cmd_settemp(args: List[str]) -> str:
+def _cmd_settemp(args: List[str], lang: str = "en") -> str:
     if len(args) != 1:
-        return "❌ Usage: /settemp &lt;0..1&gt;"
+        return t("settemp_usage", lang)
     try:
         val = float(args[0])
     except ValueError:
-        return "❌ Temperature must be a number 0..1"
+        return t("settemp_nan", lang)
     if not 0.0 <= val <= 1.0:
-        return "❌ Temperature must be 0..1"
+        return t("settemp_range", lang)
     _persist_and_reload("ANTHROPIC_TEMPERATURE", str(val))
-    return f"✅ ANTHROPIC_TEMPERATURE = {val}"
+    return t("settemp_ok", lang, val=val)
 
 
-def _cmd_setmaxtokens(args: List[str]) -> str:
+def _cmd_setmaxtokens(args: List[str], lang: str = "en") -> str:
     if len(args) != 1:
-        return "❌ Usage: /setmaxtokens &lt;1..8192&gt;"
+        return t("settokens_usage", lang)
     try:
         val = int(args[0])
     except ValueError:
-        return "❌ max_tokens must be an integer"
+        return t("settokens_nan", lang)
     if not 1 <= val <= 8192:
-        return "❌ max_tokens must be 1..8192"
+        return t("settokens_range", lang)
     _persist_and_reload("ANTHROPIC_MAX_TOKENS", str(val))
-    return f"✅ ANTHROPIC_MAX_TOKENS = {val}"
+    return t("settokens_ok", lang, val=val)
 
 
-def _cmd_setloglevel(args: List[str]) -> str:
+def _cmd_setloglevel(args: List[str], lang: str = "en") -> str:
     if len(args) != 1:
-        return "❌ Usage: /setloglevel &lt;LEVEL&gt;"
+        return t("setlog_usage", lang)
     level_name = args[0].strip().upper()
     if level_name not in _VALID_LOG_LEVELS:
-        return f"❌ level must be one of {', '.join(sorted(_VALID_LOG_LEVELS))}"
+        return t("setlog_invalid", lang, levels=", ".join(sorted(_VALID_LOG_LEVELS)))
     _persist_and_reload("LOG_LEVEL", level_name)
     # Apply to the running process too.
     level = getattr(logging, level_name)
@@ -233,10 +221,10 @@ def _cmd_setloglevel(args: List[str]) -> str:
     root.setLevel(level)
     for h in root.handlers:
         h.setLevel(level)
-    return f"✅ LOG_LEVEL = {level_name} (applied live)"
+    return t("setlog_ok", lang, level=level_name)
 
 
-def _cmd_setprompt(msg) -> str:
+def _cmd_setprompt(msg, lang: str = "en") -> str:
     new_prompt = None
     reply = getattr(msg, "reply_to_message", None)
     if reply is not None and getattr(reply, "text", None):
@@ -244,13 +232,10 @@ def _cmd_setprompt(msg) -> str:
     elif msg.text and "\n" in msg.text:
         new_prompt = msg.text.split("\n", 1)[1]
     if new_prompt is None:
-        return (
-            "❌ Send the template after the command on new lines, "
-            "or reply to a message containing it."
-        )
+        return t("setprompt_usage", lang)
     err = validate_prompt(new_prompt)
     if err:
-        return f"❌ {html.escape(err)}"
+        return t("setprompt_invalid", lang, err=html.escape(err))
     # One-step rollback, mirroring the Flask admin app.
     if PROMPT_TEMPLATE_PATH.exists():
         backup = PROMPT_TEMPLATE_PATH.with_suffix(PROMPT_TEMPLATE_PATH.suffix + ".bak")
@@ -259,34 +244,31 @@ def _cmd_setprompt(msg) -> str:
         )
     PROMPT_TEMPLATE_PATH.write_text(new_prompt, encoding="utf-8")
     reload_prompt_template()
-    return "✅ Prompt template updated and reloaded live."
+    return t("setprompt_ok", lang)
 
 
-def _reload_or_error(action: str) -> Optional[str]:
+def _reload_or_error(action: str, lang: str = "en") -> Optional[str]:
     """Run CONFIG.reload(); return an error string on failure, else None."""
     try:
         CONFIG.reload()
         return None
     except Exception as exc:
-        return f"❌ {action} failed on reload: {html.escape(str(exc))}"
+        return t("reload_failed", lang, action=action, err=html.escape(str(exc)))
 
 
-def _cmd_addchannel(args: List[str]) -> str:
+def _cmd_addchannel(args: List[str], lang: str = "en") -> str:
     if len(args) < 3:
-        return (
-            "❌ Usage: /addchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt; "
-            "[src_name] [dst_name]"
-        )
+        return t("addch_usage", lang)
     name = args[0].strip().lower()
     if not _NAME_RE.fullmatch(name):
-        return "❌ name must match [a-z0-9_]+"
+        return t("addch_bad_name", lang)
     if name in _logical_names():
-        return f"❌ channel '{html.escape(name)}' already exists (use /editchannel)"
+        return t("addch_dup", lang, name=html.escape(name))
     try:
         src_id = int(args[1])
         dst_id = int(args[2])
     except ValueError:
-        return "❌ src_id and dst_id must be integers"
+        return t("addch_bad_int", lang)
 
     up = name.upper()
     # Write leaf vars first; append the name to LOGICAL_CHANNELS LAST so a
@@ -300,44 +282,40 @@ def _cmd_addchannel(args: List[str]) -> str:
     new_names = _logical_names() + [name]
     env_store.set_env_var("LOGICAL_CHANNELS", ",".join(new_names))
 
-    err = _reload_or_error("add")
+    err = _reload_or_error("add", lang)
     if err:
         return err
-    return (
-        f"✅ Added channel '{html.escape(name)}': src {src_id} → dst {dst_id}\n"
-        "⚠️ Make sure the bot is an admin/member of the source channel, "
-        "or Telegram won't deliver its posts."
-    )
+    return t("addch_ok", lang, name=html.escape(name), src=src_id, dst=dst_id)
 
 
-def _cmd_editchannel(args: List[str]) -> str:
+def _cmd_editchannel(args: List[str], lang: str = "en") -> str:
     if len(args) != 3:
-        return "❌ Usage: /editchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt;"
+        return t("editch_usage", lang)
     name = args[0].strip().lower()
     if name not in _logical_names():
-        return f"❌ unknown channel '{html.escape(name)}'"
+        return t("editch_unknown", lang, name=html.escape(name))
     try:
         src_id = int(args[1])
         dst_id = int(args[2])
     except ValueError:
-        return "❌ src_id and dst_id must be integers"
+        return t("addch_bad_int", lang)
     up = name.upper()
     env_store.set_env_var(f"{up}_CHANNEL", str(src_id))
     env_store.set_env_var(f"{up}_EN_CHANNEL_ID", str(dst_id))
-    err = _reload_or_error("edit")
+    err = _reload_or_error("edit", lang)
     if err:
         return err
-    return f"✅ Updated '{html.escape(name)}': src {src_id} → dst {dst_id}"
+    return t("editch_ok", lang, name=html.escape(name), src=src_id, dst=dst_id)
 
 
-def _cmd_removechannel(args: List[str]) -> str:
+def _cmd_removechannel(args: List[str], lang: str = "en") -> str:
     if len(args) != 1:
-        return "❌ Usage: /removechannel &lt;name&gt;"
+        return t("rmch_usage", lang)
     name = args[0].strip().lower()
     if name in _PROTECTED_CHANNELS:
-        return f"❌ '{html.escape(name)}' is protected and cannot be removed"
+        return t("rmch_protected", lang, name=html.escape(name))
     if name not in _logical_names():
-        return f"❌ unknown channel '{html.escape(name)}'"
+        return t("editch_unknown", lang, name=html.escape(name))
     # Drop from LOGICAL_CHANNELS first so reload() no longer requires its vars,
     # then clean up the leaf vars.
     new_names = [n for n in _logical_names() if n != name]
@@ -345,14 +323,14 @@ def _cmd_removechannel(args: List[str]) -> str:
     up = name.upper()
     for suffix in ("_CHANNEL", "_EN_CHANNEL_ID", "_CHANNEL_NAME", "_EN_CHANNEL_NAME"):
         env_store.unset_env_var(f"{up}{suffix}")
-    err = _reload_or_error("remove")
+    err = _reload_or_error("remove", lang)
     if err:
         return err
-    return f"✅ Removed channel '{html.escape(name)}'"
+    return t("rmch_ok", lang, name=html.escape(name))
 
 
-def _cmd_admins() -> str:
-    lines = ["<b>Admins</b>"]
+def _cmd_admins(lang: str = "en") -> str:
+    lines = [t("admins_title", lang)]
     admins = admin_store.list_admins()
     for a in admins:
         if a["label"]:
@@ -362,11 +340,11 @@ def _cmd_admins() -> str:
         else:
             lines.append(f"<code>{a['id']}</code>")
     if len(lines) == 1:
-        lines.append("(none)")
+        lines.append(t("common_none", lang))
     lines += [
         "",
-        "Add: /addadmin &lt;user_id&gt; [label] · Remove: /removeadmin &lt;user_id&gt;",
-        "ℹ️ A name resolves only if that user has DM'd the bot.",
+        t("admins_help", lang),
+        t("admins_note", lang),
     ]
     return "\n".join(lines)
 
@@ -432,12 +410,25 @@ def _cmd_removeadmin(args: List[str]) -> str:
     return ("✅ " if ok else "❌ ") + html.escape(msg)
 
 
-def _cmd_reload() -> str:
-    err = _reload_or_error("reload")
+def _cmd_reload(lang: str = "en") -> str:
+    err = _reload_or_error("reload", lang)
     if err:
         return err
     reload_prompt_template()
-    return "✅ Reloaded .env config and prompt template."
+    return t("reload_ok", lang)
+
+
+def _cmd_setlang(args: List[str], msg, lang: str = "en") -> str:
+    """Set the caller's per-admin menu language (text-command parity with the menu)."""
+    uid = getattr(getattr(msg, "from_user", None), "id", None)
+    if uid is None:
+        return t("alert_error", lang)
+    if len(args) != 1 or args[0].strip().lower() not in admin_i18n.LOCALES:
+        langs = " | ".join(admin_i18n.LOCALES)
+        return f"❌ Usage: /setlang &lt;{html.escape(langs)}&gt;"
+    new_lang = args[0].strip().lower()
+    admin_prefs.set_lang(uid, new_lang)
+    return t("lang_switched", new_lang)
 
 
 async def handle_command(
@@ -453,51 +444,70 @@ async def handle_command(
     """Parse one admin DM and return the reply text (HTML). Never raises."""
     from translator.services import admin_menu  # lazy: avoid import cycle
 
-    text = (getattr(msg, "text", None) or "").strip()
+    lang = _lang_of(msg)
+    uid = getattr(getattr(msg, "from_user", None), "id", None)
+
+    raw = (getattr(msg, "text", None) or "").strip()
     # A persistent reply-keyboard tap arrives as label text (e.g. "📊 Status");
     # map it back to the command it stands for.
-    text = admin_menu.resolve_button_label(text) or text
+    resolved = admin_menu.resolve_button_label(raw) or raw
+
+    # If an add-channel wizard is in progress for this admin, capture their reply
+    # — unless they tapped a button / typed a command, which escapes the wizard.
+    if uid is not None and admin_wizard.is_active(uid):
+        if resolved.startswith("/"):
+            admin_wizard.cancel(uid)
+        else:
+            return admin_wizard.feed(uid, raw, lang)
+
+    text = resolved
     if not text.startswith("/"):
-        return "Send /help for the command list, or /menu for buttons."
+        return t("prompt_for_help", lang)
     first = text.split(maxsplit=1)[0]
     cmd = first.split("@", 1)[0].lower()  # tolerate /cmd@BotName
     args = text.split()[1:]
 
     if cmd == "/help" or cmd == "/start":
-        return _cmd_help()
+        return _cmd_help(lang)
     if cmd == "/status":
-        return _cmd_status(start_ts, query_queue, pyro)
+        return _cmd_status(start_ts, query_queue, pyro, lang)
     if cmd == "/stats":
-        return _cmd_stats(args)
+        return _cmd_stats(args, lang)
     if cmd == "/channels":
-        return _cmd_channels()
+        return _cmd_channels(lang)
     if cmd == "/prompt":
-        return _cmd_prompt()
+        return _cmd_prompt(lang)
     if cmd == "/setmodel":
-        return _cmd_setmodel(args)
+        return _cmd_setmodel(args, lang)
     if cmd == "/settemp":
-        return _cmd_settemp(args)
+        return _cmd_settemp(args, lang)
     if cmd == "/setmaxtokens":
-        return _cmd_setmaxtokens(args)
+        return _cmd_setmaxtokens(args, lang)
     if cmd == "/setloglevel":
-        return _cmd_setloglevel(args)
+        return _cmd_setloglevel(args, lang)
+    if cmd == "/setlang":
+        return _cmd_setlang(args, msg, lang)
+    if cmd == "/cancel":
+        if uid is not None:
+            admin_wizard.cancel(uid)
+        return t("wiz_cancelled", lang)
     if cmd == "/setprompt":
-        return _cmd_setprompt(msg)
+        return _cmd_setprompt(msg, lang)
     if cmd == "/addchannel":
-        return _cmd_addchannel(args)
+        return _cmd_addchannel(args, lang)
     if cmd == "/editchannel":
-        return _cmd_editchannel(args)
+        return _cmd_editchannel(args, lang)
     if cmd == "/removechannel":
-        return _cmd_removechannel(args)
+        return _cmd_removechannel(args, lang)
     if cmd == "/admins":
-        return _cmd_admins()
+        return _cmd_admins(lang)
     if cmd == "/addadmin":
         return await _cmd_addadmin(args, pyro=pyro)
     if cmd == "/removeadmin":
         return _cmd_removeadmin(args)
     if cmd == "/reload":
-        return _cmd_reload()
-    return f"❓ Unknown command {html.escape(cmd)}. Send /help."
+        return _cmd_reload(lang)
+    return t("unknown_cmd", lang, cmd=html.escape(cmd))
 
 
 def _is_admin(_f, _c, m) -> bool:
@@ -532,11 +542,16 @@ def register_admin_handlers(
 
     @pyro.on_message(filters.private & _admin_filter())
     async def _dispatch(client, msg):  # noqa: ANN001
+        uid = getattr(getattr(msg, "from_user", None), "id", None)
+        lang = admin_prefs.get_lang(uid) if uid is not None else admin_i18n.DEFAULT_LANG
+
         # A user picked via the "➕ Add admin" keyboard arrives as a service
         # message (no text) carrying users_shared — handle it before the text path
         # and restore the main keyboard.
         shared = getattr(msg, "users_shared", None)
         if shared is not None:
+            if uid is not None:
+                admin_wizard.cancel(uid)  # picking a user leaves any wizard
             try:
                 reply = _add_shared_users(getattr(shared, "users", None) or [])
             except Exception as exc:
@@ -547,7 +562,7 @@ def register_admin_handlers(
                     _truncate(reply),
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=admin_menu.to_reply_markup(
-                        admin_menu.build_reply_keyboard()
+                        admin_menu.build_reply_keyboard(lang)
                     ),
                 )
             except Exception:
@@ -561,22 +576,32 @@ def register_admin_handlers(
             if resolved.startswith("/")
             else ""
         )
+        # Tapping a menu-bearing button abandons any in-progress add-channel
+        # wizard cleanly (otherwise the next typed message would be captured).
+        if uid is not None and token in (
+            "/menu",
+            "/start",
+            "/settings",
+            "/adminsmenu",
+            "/channelsmenu",
+        ):
+            admin_wizard.cancel(uid)
         # Menu-bearing entrypoints attach a keyboard, so they bypass the plain
         # text-reply path of handle_command.
         if token in ("/menu", "/start"):
             try:
                 await msg.reply_text(
-                    admin_menu.MENU_GREETING,
+                    admin_i18n.t("menu_greeting", lang),
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=admin_menu.to_reply_markup(
-                        admin_menu.build_reply_keyboard()
+                        admin_menu.build_reply_keyboard(lang)
                     ),
                 )
             except Exception:
                 log.exception("failed to send menu")
             return
         if token == "/settings":
-            title, rows = admin_menu.settings_entry()
+            title, rows = admin_menu.settings_entry(lang)
             try:
                 await msg.reply_text(
                     title,
@@ -587,7 +612,7 @@ def register_admin_handlers(
                 log.exception("failed to send settings menu")
             return
         if token == "/adminsmenu":
-            title, rows = admin_menu.admins_entry()
+            title, rows = admin_menu.admins_entry(lang)
             try:
                 await msg.reply_text(
                     title,
@@ -596,6 +621,17 @@ def register_admin_handlers(
                 )
             except Exception:
                 log.exception("failed to send admins menu")
+            return
+        if token == "/channelsmenu":
+            title, rows = admin_menu.channels_entry(lang)
+            try:
+                await msg.reply_text(
+                    title,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=admin_menu.to_inline_markup(rows),
+                )
+            except Exception:
+                log.exception("failed to send channels menu")
             return
 
         try:

@@ -7,13 +7,19 @@ remember slash commands:
   whose taps send a label such as ``📊 Status`` — :func:`resolve_button_label`
   maps that label back to the existing ``/status`` command, and
 * an **inline keyboard** for the Settings tree (model / temperature / max-tokens
-  / log level / remove-channel), navigated in place via ``on_callback_query``.
+  / log level / remove-channel / language), navigated in place via
+  ``on_callback_query``.
 
 Every action ultimately routes back through the ``_cmd_*`` helpers in
 :mod:`translator.services.admin_commands` — no business logic is duplicated.
 The pure menu logic (:func:`resolve_button_label`, :func:`handle_callback`,
 :func:`build_menu`) is deliberately free of Pyrogram plumbing so it can be
 unit-tested with plain strings; the Pyrogram-aware glue lives at the bottom.
+
+All operator-facing text comes from :mod:`translator.services.admin_i18n` via
+``t(key, lang)``; the active ``lang`` is the per-admin preference
+(:mod:`translator.services.admin_prefs`), resolved at the Pyrogram entry points
+and threaded down. Pure functions default ``lang="en"`` for back-compat.
 """
 
 from __future__ import annotations
@@ -26,7 +32,14 @@ from typing import List, Optional, Tuple
 from pyrogram import enums
 
 from translator.config import CONFIG
-from translator.services import admin_commands, admin_store
+from translator.services import (
+    admin_commands,
+    admin_i18n,
+    admin_prefs,
+    admin_store,
+    admin_wizard,
+)
+from translator.services.admin_i18n import t
 
 log = logging.getLogger("ADMIN.MENU")
 
@@ -38,45 +51,46 @@ Rows = List[Row]
 
 # --- Persistent reply keyboard ------------------------------------------------
 
-# Reply-keyboard taps arrive as ordinary text messages, so map each label back
-# to the command (or the menu-bearing pseudo-command) it stands for.
-BUTTON_COMMANDS = {
-    "📊 Status": "/status",
-    "📈 Stats": "/stats",
-    "📡 Channels": "/channels",
-    # Opens the inline Admins menu (add/remove buttons), not the text list — this
-    # menu-bearing pseudo-command is intercepted in admin_commands._dispatch.
-    "👤 Admins": "/adminsmenu",
-    "📝 Prompt": "/prompt",
-    "🔄 Reload": "/reload",
-    "❓ Help": "/help",
-    "🛠️ Settings": "/settings",
+# Each reply-keyboard button maps to a command (or a menu-bearing pseudo-command).
+# Keyed by i18n string key so the *label* renders in any locale while the command
+# it resolves to stays stable.
+BUTTON_KEYS = {
+    "btn_status": "/status",
+    "btn_stats": "/stats",
+    "btn_channels": "/channelsmenu",
+    "btn_admins": "/adminsmenu",
+    "btn_prompt": "/prompt",
+    "btn_reload": "/reload",
+    "btn_help": "/help",
+    "btn_settings": "/settings",
     # Shown on the temporary "add admin" keyboard; resolves to /menu so tapping
     # it cancels the add-flow and restores the main keyboard.
-    "🔙 Back to menu": "/menu",
+    "btn_back_to_menu": "/menu",
 }
 
-MENU_GREETING = (
-    "<b>📋 Relay bot menu</b>\n"
-    "Tap a button below, or open 🛠️ Settings to view and change configuration.\n"
-    "Typed commands still work — tap ❓ Help to see them."
-)
+# Reverse map built across *all* locales so a tapped label resolves to its
+# command regardless of the language it was rendered in.
+_LABEL_TO_CMD = {
+    t(key, lang): cmd
+    for key, cmd in BUTTON_KEYS.items()
+    for lang in admin_i18n.LOCALES
+}
 
 
 def resolve_button_label(text: Optional[str]) -> Optional[str]:
-    """Map a persistent-keyboard label to its command, else ``None``."""
+    """Map a persistent-keyboard label (any locale) to its command, else None."""
     if not text:
         return None
-    return BUTTON_COMMANDS.get(text.strip())
+    return _LABEL_TO_CMD.get(text.strip())
 
 
-def build_reply_keyboard() -> List[List[str]]:
+def build_reply_keyboard(lang: str = "en") -> List[List[str]]:
     """Spec for the persistent reply keyboard (rows of plain labels)."""
     return [
-        ["📊 Status", "📈 Stats"],
-        ["📡 Channels", "👤 Admins"],
-        ["📝 Prompt", "🔄 Reload"],
-        ["❓ Help", "🛠️ Settings"],
+        [t("btn_status", lang), t("btn_stats", lang)],
+        [t("btn_channels", lang), t("btn_admins", lang)],
+        [t("btn_prompt", lang), t("btn_reload", lang)],
+        [t("btn_help", lang), t("btn_settings", lang)],
     ]
 
 
@@ -90,17 +104,13 @@ MODEL_PRESETS = [
 TEMP_PRESETS = ["0", "0.3", "0.5", "0.7", "1.0"]
 TOKEN_PRESETS = ["1500", "2000", "4000", "8192"]
 
-_BACK_TO_SETTINGS: Row = [("◀️ Back", "nav:settings")]
+
+def _back_to_settings(lang: str = "en") -> Row:
+    return [(t("btn_back", lang), "nav:settings")]
+
 
 # Identifier echoed back in ``users_shared.button_id`` for the add-admin picker.
 ADD_ADMIN_BUTTON_ID = 1
-ADD_ADMIN_PROMPT = (
-    "<b>➕ Add admin</b>\n"
-    "Tap “👤 Pick a user…” to choose someone from your chats — I'll capture their "
-    "id and name automatically.\n"
-    "Or type <code>/addadmin &lt;user_id&gt;</code> or "
-    "<code>/addadmin @username</code> [label]."
-)
 
 
 @dataclass
@@ -112,68 +122,77 @@ class CallbackResult:
     alert: Optional[str] = None  # short toast shown via callback_query.answer
 
 
-def _settings_menu() -> Tuple[str, Rows]:
-    title = (
-        "<b>⚙️ Settings</b>\n\n"
-        f"{admin_commands._config_summary()}\n\n"
-        "Pick a setting to change."
-    )
+def _settings_menu(lang: str = "en") -> Tuple[str, Rows]:
+    title = t("settings_title", lang, summary=admin_commands._config_summary(lang))
     rows: Rows = [
-        [("🤖 Set Model", "nav:model")],
-        [("🌡️ Temperature", "nav:temp"), ("🔢 Max Tokens", "nav:tokens")],
-        [("🪵 Log Level", "nav:log")],
-        [("🗑️ Remove Channel", "nav:rmch")],
-        [("👤 Admins", "nav:admins")],
-        [("✖️ Close", "nav:close")],
+        [(t("settings_btn_model", lang), "nav:model")],
+        [
+            (t("settings_btn_temp", lang), "nav:temp"),
+            (t("settings_btn_tokens", lang), "nav:tokens"),
+        ],
+        [(t("settings_btn_log", lang), "nav:log")],
+        [(t("settings_btn_rmch", lang), "nav:rmch")],
+        [(t("btn_admins", lang), "nav:admins")],
+        [(t("btn_language", lang), "nav:lang")],
+        [(t("settings_btn_close", lang), "nav:close")],
     ]
     return title, rows
 
 
-def _model_menu() -> Tuple[str, Rows]:
-    title = (
-        "<b>🤖 Model</b>\n"
-        f"Current: {CONFIG.ANTHROPIC_MODEL}\n"
-        "Pick a preset, or type <code>/setmodel &lt;id&gt;</code> for any other."
-    )
+def _model_menu(lang: str = "en") -> Tuple[str, Rows]:
+    title = t("model_title", lang, current=CONFIG.ANTHROPIC_MODEL)
     rows: Rows = [[(label, f"set:model:{value}")] for label, value in MODEL_PRESETS]
-    rows.append(_BACK_TO_SETTINGS)
+    rows.append(_back_to_settings(lang))
     return title, rows
 
 
-def _temp_menu() -> Tuple[str, Rows]:
-    title = (
-        "<b>🌡️ Temperature</b>\n"
-        f"Current: {CONFIG.ANTHROPIC_TEMPERATURE}\nPick a value (0 = literal)."
-    )
-    rows: Rows = [[(v, f"set:temp:{v}") for v in TEMP_PRESETS], list(_BACK_TO_SETTINGS)]
+def _temp_menu(lang: str = "en") -> Tuple[str, Rows]:
+    title = t("temp_title", lang, current=CONFIG.ANTHROPIC_TEMPERATURE)
+    rows: Rows = [
+        [(v, f"set:temp:{v}") for v in TEMP_PRESETS],
+        _back_to_settings(lang),
+    ]
     return title, rows
 
 
-def _tokens_menu() -> Tuple[str, Rows]:
-    title = (
-        "<b>🔢 Max Tokens</b>\n"
-        f"Current: {CONFIG.ANTHROPIC_MAX_TOKENS}\nPick a value."
-    )
+def _tokens_menu(lang: str = "en") -> Tuple[str, Rows]:
+    title = t("tokens_title", lang, current=CONFIG.ANTHROPIC_MAX_TOKENS)
     rows: Rows = [
         [(v, f"set:tokens:{v}") for v in TOKEN_PRESETS],
-        list(_BACK_TO_SETTINGS),
+        _back_to_settings(lang),
     ]
     return title, rows
 
 
-def _log_menu() -> Tuple[str, Rows]:
-    title = (
-        "<b>🪵 Log Level</b>\n"
-        f"Current: {CONFIG.LOG_LEVEL}\nPick a level."
-    )
+def _log_menu(lang: str = "en") -> Tuple[str, Rows]:
+    title = t("log_title", lang, current=CONFIG.LOG_LEVEL)
     levels = sorted(admin_commands._VALID_LOG_LEVELS)
     rows: Rows = [[(lvl, f"set:log:{lvl}")] for lvl in levels]
-    rows.append(_BACK_TO_SETTINGS)
+    rows.append(_back_to_settings(lang))
     return title, rows
 
 
-def _rmch_menu() -> Tuple[str, Rows]:
-    title = "<b>🗑️ Remove Channel</b>\nPick a channel to stop relaying."
+def _lang_menu(lang: str = "en") -> Tuple[str, Rows]:
+    title = t("lang_title", lang)
+    rows: Rows = [
+        [(t("lang_en", lang), "setlang:en")],
+        [(t("lang_be", lang), "setlang:be")],
+        _back_to_settings(lang),
+    ]
+    return title, rows
+
+
+def _channels_menu(lang: str = "en") -> Tuple[str, Rows]:
+    title = admin_commands._cmd_channels(lang) + t("channels_menu_hint", lang)
+    rows: Rows = [
+        [(t("btn_add_channel_pair", lang), "addch:start")],
+        _back_to_settings(lang),
+    ]
+    return title, rows
+
+
+def _rmch_menu(lang: str = "en") -> Tuple[str, Rows]:
+    title = t("rmch_menu_title", lang)
     removable = [
         n
         for n in admin_commands._logical_names()
@@ -182,24 +201,25 @@ def _rmch_menu() -> Tuple[str, Rows]:
     if removable:
         rows: Rows = [[(name, f"rmch:{name}")] for name in removable]
     else:
-        rows = [[("(no removable channels)", "nav:settings")]]
-    rows.append(_BACK_TO_SETTINGS)
+        rows = [[(t("rmch_none", lang), "nav:settings")]]
+    rows.append(_back_to_settings(lang))
     return title, rows
 
 
-def _rmch_confirm(name: str) -> Tuple[str, Rows]:
-    title = (
-        f"<b>🗑️ Remove '{name}'?</b>\nThis stops the relay for that pair."
-    )
+def _rmch_confirm(name: str, lang: str = "en") -> Tuple[str, Rows]:
+    title = t("rmch_confirm_title", lang, name=name)
     rows: Rows = [
-        [("✅ Yes, remove", f"rmchok:{name}"), ("◀️ No, back", "nav:rmch")]
+        [
+            (t("btn_yes_remove", lang), f"rmchok:{name}"),
+            (t("btn_no_back", lang), "nav:rmch"),
+        ]
     ]
     return title, rows
 
 
-def _admins_menu() -> Tuple[str, Rows]:
+def _admins_menu(lang: str = "en") -> Tuple[str, Rows]:
     admins = admin_store.list_admins()
-    lines = ["<b>👤 Admins</b>"]
+    lines = [t("admins_menu_title", lang)]
     for a in admins:
         if a["label"]:
             lines.append(f"{html.escape(a['label'])} (<code>{a['id']}</code>)")
@@ -208,70 +228,78 @@ def _admins_menu() -> Tuple[str, Rows]:
         else:
             lines.append(f"<code>{a['id']}</code>")
     if not admins:
-        lines.append("(none)")
-    lines += [
-        "",
-        "Tap an admin to remove. Add via <code>/addadmin &lt;id&gt; [label]</code>.",
-    ]
+        lines.append(t("common_none", lang))
+    lines += ["", t("admins_menu_help", lang)]
     title = "\n".join(lines)
     rows: Rows = [
         [(f"🗑️ {a['display']}", f"rmadmin:{a['id']}")] for a in admins
     ]
-    rows.append([("➕ Add admin", "admin:add")])
-    rows.append(list(_BACK_TO_SETTINGS))
+    rows.append([(t("btn_add_admin", lang), "admin:add")])
+    rows.append(_back_to_settings(lang))
     return title, rows
 
 
-def _admin_confirm(uid: str) -> Tuple[str, Rows]:
-    title = (
-        f"<b>👤 Remove admin <code>{html.escape(uid)}</code>?</b>\n"
-        "They lose DM control and stop receiving alerts."
-    )
+def _admin_confirm(uid: str, lang: str = "en") -> Tuple[str, Rows]:
+    title = t("admin_confirm_title", lang, uid=html.escape(uid))
     rows: Rows = [
-        [("✅ Yes, remove", f"rmadminok:{uid}"), ("◀️ No, back", "nav:admins")]
+        [
+            (t("btn_yes_remove", lang), f"rmadminok:{uid}"),
+            (t("btn_no_back", lang), "nav:admins"),
+        ]
     ]
     return title, rows
 
 
-def build_menu(menu_id: str) -> Tuple[str, Rows]:
+def build_menu(menu_id: str, lang: str = "en") -> Tuple[str, Rows]:
     """Return ``(title_html, rows)`` for a navigation target."""
     if menu_id == "model":
-        return _model_menu()
+        return _model_menu(lang)
     if menu_id == "temp":
-        return _temp_menu()
+        return _temp_menu(lang)
     if menu_id == "tokens":
-        return _tokens_menu()
+        return _tokens_menu(lang)
     if menu_id == "log":
-        return _log_menu()
+        return _log_menu(lang)
+    if menu_id == "lang":
+        return _lang_menu(lang)
+    if menu_id == "channels":
+        return _channels_menu(lang)
     if menu_id == "rmch":
-        return _rmch_menu()
+        return _rmch_menu(lang)
     if menu_id == "admins":
-        return _admins_menu()
+        return _admins_menu(lang)
     # Default / "settings".
-    return _settings_menu()
+    return _settings_menu(lang)
 
 
-def settings_entry() -> Tuple[str, Rows]:
+def settings_entry(lang: str = "en") -> Tuple[str, Rows]:
     """Title + rows for the top-level Settings menu (used by the DM wrapper)."""
-    return _settings_menu()
+    return _settings_menu(lang)
 
 
-def admins_entry() -> Tuple[str, Rows]:
+def admins_entry(lang: str = "en") -> Tuple[str, Rows]:
     """Title + rows for the Admins menu (used by the DM wrapper / reply button)."""
-    return _admins_menu()
+    return _admins_menu(lang)
 
 
-def _fallback() -> CallbackResult:
+def channels_entry(lang: str = "en") -> Tuple[str, Rows]:
+    """Title + rows for the Channels menu (used by the /channelsmenu reply button)."""
+    return _channels_menu(lang)
+
+
+def _fallback(lang: str = "en") -> CallbackResult:
     return CallbackResult(
-        "This menu expired. Tap 🛠️ Settings or send /menu to reopen.",
+        t("menu_expired", lang),
         None,
-        "Expired",
+        t("alert_expired", lang),
     )
 
 
 def handle_callback(
     data: str,
     *,
+    lang: str = "en",
+    uid=None,
     start_ts: Optional[float] = None,
     query_queue=None,
     pyro=None,
@@ -284,10 +312,18 @@ def handle_callback(
         target = parts[1] if len(parts) > 1 else "settings"
         if target == "close":
             return CallbackResult(
-                "✅ Menu closed. Send /menu to reopen.", None, "Closed"
+                t("menu_closed", lang), None, t("alert_closed", lang)
             )
-        title, rows = build_menu(target)
+        title, rows = build_menu(target, lang)
         return CallbackResult(title, rows)
+
+    if head == "setlang" and len(parts) >= 2 and uid is not None:
+        new_lang = parts[1]
+        ok, _ = admin_prefs.set_lang(uid, new_lang)
+        if not ok:
+            new_lang = lang
+        title, rows = _settings_menu(new_lang)
+        return CallbackResult(title, rows, t("alert_lang", new_lang))
 
     if head == "set" and len(parts) >= 3:
         kind = parts[1]
@@ -300,31 +336,31 @@ def handle_callback(
         }
         fn = setters.get(kind)
         if fn is None:
-            return _fallback()
-        text = fn([value])
-        alert = "Saved" if text.startswith("✅") else "Error"
-        return CallbackResult(text, [list(_BACK_TO_SETTINGS)], alert)
+            return _fallback(lang)
+        text = fn([value], lang)
+        alert = t("alert_saved", lang) if text.startswith("✅") else t("alert_error", lang)
+        return CallbackResult(text, [_back_to_settings(lang)], alert)
 
     if head == "rmch" and len(parts) >= 2:
-        title, rows = _rmch_confirm(parts[1])
+        title, rows = _rmch_confirm(parts[1], lang)
         return CallbackResult(title, rows)
 
     if head == "rmchok" and len(parts) >= 2:
-        text = admin_commands._cmd_removechannel([parts[1]])
-        alert = "Removed" if text.startswith("✅") else "Error"
-        return CallbackResult(text, [list(_BACK_TO_SETTINGS)], alert)
+        text = admin_commands._cmd_removechannel([parts[1]], lang)
+        alert = t("alert_removed", lang) if text.startswith("✅") else t("alert_error", lang)
+        return CallbackResult(text, [_back_to_settings(lang)], alert)
 
     if head == "rmadmin" and len(parts) >= 2:
-        title, rows = _admin_confirm(parts[1])
+        title, rows = _admin_confirm(parts[1], lang)
         return CallbackResult(title, rows)
 
     if head == "rmadminok" and len(parts) >= 2:
         ok, msg = admin_store.remove_admin(parts[1])
         text = ("✅ " if ok else "❌ ") + html.escape(msg)
-        alert = "Removed" if ok else "Error"
-        return CallbackResult(text, [list(_BACK_TO_SETTINGS)], alert)
+        alert = t("alert_removed", lang) if ok else t("alert_error", lang)
+        return CallbackResult(text, [_back_to_settings(lang)], alert)
 
-    return _fallback()
+    return _fallback(lang)
 
 
 # --- Pyrogram glue (the only client-aware part) -------------------------------
@@ -352,12 +388,12 @@ def to_reply_markup(spec: List[List[str]]):
     )
 
 
-def build_add_admin_keyboard():
+def build_add_admin_keyboard(lang: str = "en"):
     """Temporary reply keyboard whose first button opens Telegram's user picker.
 
     Selecting a user makes Telegram send a ``users_shared`` service message
     (handled in ``admin_commands``); the second button cancels and restores the
-    main menu (its label maps to ``/menu`` via ``BUTTON_COMMANDS``).
+    main menu (its label maps to ``/menu`` via the reverse label map).
     """
     from pyrogram.types import (
         KeyboardButton,
@@ -369,7 +405,7 @@ def build_add_admin_keyboard():
         [
             [
                 KeyboardButton(
-                    "👤 Pick a user…",
+                    t("btn_pick_user", lang),
                     request_users=KeyboardButtonRequestUsers(
                         button_id=ADD_ADMIN_BUTTON_ID,
                         max_quantity=1,
@@ -378,7 +414,7 @@ def build_add_admin_keyboard():
                     ),
                 )
             ],
-            [KeyboardButton("🔙 Back to menu")],
+            [KeyboardButton(t("btn_back_to_menu", lang))],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
@@ -391,25 +427,69 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
 
     @pyro.on_callback_query(admin_commands._admin_filter())
     async def _on_callback(client, cq):  # noqa: ANN001
+        uid = getattr(getattr(cq, "from_user", None), "id", None)
+        lang = admin_prefs.get_lang(uid) if uid is not None else admin_i18n.DEFAULT_LANG
+        data = cq.data or ""
+
         # The user picker needs a *reply* keyboard, which can't be attached to an
         # edited inline message — so send a fresh message instead of editing.
-        if (cq.data or "") == "admin:add":
+        if data == "admin:add":
             try:
                 await cq.answer()
             except Exception:
                 pass
             try:
                 await cq.message.reply_text(
-                    ADD_ADMIN_PROMPT,
+                    t("add_admin_prompt", lang),
                     parse_mode=enums.ParseMode.HTML,
-                    reply_markup=build_add_admin_keyboard(),
+                    reply_markup=build_add_admin_keyboard(lang),
                 )
             except Exception:
                 log.exception("failed to start add-admin flow")
             return
+
+        # Start the add-channel wizard: stash pending state and send the first
+        # prompt as a fresh message carrying a Cancel button.
+        if data == "addch:start":
+            try:
+                await cq.answer()
+            except Exception:
+                pass
+            admin_wizard.start(uid)
+            try:
+                await cq.message.reply_text(
+                    t("wiz_prompt_name", lang),
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=to_inline_markup(
+                        [[(t("btn_cancel", lang), "addch:cancel")]]
+                    ),
+                )
+            except Exception:
+                log.exception("failed to start add-channel wizard")
+            return
+
+        if data == "addch:cancel":
+            admin_wizard.cancel(uid)
+            try:
+                await cq.answer(t("alert_closed", lang))
+            except Exception:
+                pass
+            try:
+                await cq.edit_message_text(
+                    admin_commands._truncate(t("wiz_cancelled", lang)),
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except MessageNotModified:
+                pass
+            except Exception:
+                log.exception("failed to cancel add-channel wizard")
+            return
+
         try:
             result = handle_callback(
-                cq.data or "",
+                data,
+                lang=lang,
+                uid=uid,
                 start_ts=start_ts,
                 query_queue=query_queue,
                 pyro=pyro,
@@ -417,7 +497,7 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
         except Exception:  # never let a button press crash the handler
             log.exception("admin callback failed")
             try:
-                await cq.answer("Error")
+                await cq.answer(t("alert_error", lang))
             except Exception:
                 pass
             return
@@ -436,5 +516,18 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
             pass  # re-tapping a nav button that shows identical content
         except Exception:
             log.exception("callback edit failed")
+
+        # An inline edit can't re-skin the *persistent* reply keyboard, so after a
+        # language switch push a fresh message carrying the new-language keyboard.
+        if data.startswith("setlang:"):
+            new_lang = admin_prefs.get_lang(uid) if uid is not None else lang
+            try:
+                await cq.message.reply_text(
+                    t("lang_switched", new_lang),
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=to_reply_markup(build_reply_keyboard(new_lang)),
+                )
+            except Exception:
+                log.exception("failed to refresh reply keyboard after setlang")
 
     return _on_callback
