@@ -7,9 +7,10 @@ import requests
 import asyncio
 import traceback
 from flask_login import login_required
-import bleach
-from anthropic import Anthropic
+import nh3
 from translator.services.event_logger import EventRecorder
+from translator.services.anthropic_client import get_anthropic_client
+from translator.utils.utils_async import run_with_retries
 from translator.config import BOT_TOKEN
 
 admin_manager_bp = Blueprint("admin_manager_bp", __name__)
@@ -165,19 +166,23 @@ def clean_telegram_html(content: str) -> str:
 
     # Telegram-supported HTML tags (Bot API). Widened from b/i/u/a/code so that
     # strikethrough, spoilers, code blocks and quotes aren't silently dropped.
-    telegram_allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre', 'blockquote', 'tg-spoiler']
+    # nh3 takes a set of tags and a dict of tag -> set of attributes (vs bleach's
+    # list/dict); disallowed tags are stripped but their text content is kept
+    # (equivalent to the old strip=True). link_rel=None stops nh3 injecting
+    # rel="noopener noreferrer", which Telegram's <a> must not carry.
+    telegram_allowed_tags = {'b', 'i', 'u', 's', 'a', 'code', 'pre', 'blockquote', 'tg-spoiler'}
     telegram_allowed_attributes = {
-        'a': ['href'],
-        'code': ['class'],   # e.g. class="language-python" for code blocks
-        'blockquote': ['expandable'],
+        'a': {'href'},
+        'code': {'class'},   # e.g. class="language-python" for code blocks
+        'blockquote': {'expandable'},
     }
-    
-    # Clean with bleach - this removes unsupported tags and attributes
-    cleaned = bleach.clean(
+
+    # Clean with nh3 - this removes unsupported tags and attributes
+    cleaned = nh3.clean(
         content,
         tags=telegram_allowed_tags,
         attributes=telegram_allowed_attributes,
-        strip=True
+        link_rel=None,
     )
     
     # Convert <p> to line breaks (compatible with existing sanitize_html)
@@ -205,7 +210,7 @@ def clean_telegram_html(content: str) -> str:
     
     # Final safety check: if cleaning resulted in empty content, use original text-only version
     if not cleaned:
-        text_only = bleach.clean(content, tags=[], strip=True)
+        text_only = nh3.clean(content, tags=set())
         return text_only.strip()
     
     return cleaned
@@ -234,7 +239,7 @@ def validate_message_content(message_content: str) -> tuple[bool, str]:
     print(f"Cleaned content preview: {cleaned_content[:100]}..." if cleaned_content else "EMPTY")
 
     # Check if message is just whitespace after cleaning
-    text_only = bleach.clean(cleaned_content, tags=[], strip=True)
+    text_only = nh3.clean(cleaned_content, tags=set())
     if not text_only.strip():
         print("VALIDATION FAILED: No visible text after cleaning")
         return False, "Message contains no visible text"
@@ -291,7 +296,7 @@ def prepare_message_content(translation_result: str, raw_html_result: str) -> tu
     print(f"Cleaned message preview: {cleaned_message[:100]}..." if cleaned_message else "EMPTY")
     
     # Validate the cleaned content
-    text_only = bleach.clean(cleaned_message, tags=[], strip=True)
+    text_only = nh3.clean(cleaned_message, tags=set())
     if not text_only.strip():
         print("PREPARATION FAILED: No visible text after cleaning")
         return False, "", "Message contains no visible text after cleaning"
@@ -571,28 +576,29 @@ def channel_translate():
                 # Check API key (presence only — never log key material)
                 api_key = os.getenv("ANTHROPIC_API_KEY", "")
                 logging.info("Anthropic API key present: %s", bool(api_key))
-                
-                anthropic_client = Anthropic(api_key=api_key)
+
+                anthropic_client = get_anthropic_client()
                 print("Anthropic client created successfully")
-                
+
                 print("Calling translate_html...")
+                # Retry transient API failures so the admin UI doesn't surface them.
                 translation_result = asyncio.run(
-                    translate_html(anthropic_client, payload)
+                    run_with_retries(translate_html, anthropic_client, payload)
                 )
                 print(f"Translation completed. Result length: {len(translation_result) if translation_result else 0}")
                 print(f"Translation preview: {translation_result[:200]}..." if translation_result else "EMPTY")
-                
+
                 import re
                 translation_result = re.sub(r"(</[a-z]+>)+$", "", translation_result)
                 raw_html_result = clean_telegram_html(translation_result)
                 rendered_html_result = translation_result
-                
+
                 print(f"Final results:")
                 print(f"  translation_result length: {len(translation_result) if translation_result else 0}")
                 print(f"  raw_html_result length: {len(raw_html_result) if raw_html_result else 0}")
                 print(f"  rendered_html_result length: {len(rendered_html_result) if rendered_html_result else 0}")
                 print(f"{'='*50}")
-                
+
             except Exception as e:
                 print(f"CUSTOM TRANSLATION ERROR: {e}")
                 print(f"Error type: {type(e)}")
@@ -753,28 +759,29 @@ def channel_translate():
                 # Check API key (presence only — never log key material)
                 api_key = os.getenv("ANTHROPIC_API_KEY", "")
                 logging.info("Anthropic API key present: %s", bool(api_key))
-                
-                anthropic_client = Anthropic(api_key=api_key)
+
+                anthropic_client = get_anthropic_client()
                 print("Anthropic client created successfully")
-                
+
                 print("Calling translate_html...")
+                # Retry transient API failures so the admin UI doesn't surface them.
                 translation_result = asyncio.run(
-                    translate_html(anthropic_client, payload)
+                    run_with_retries(translate_html, anthropic_client, payload)
                 )
                 print(f"Translation completed. Result length: {len(translation_result) if translation_result else 0}")
                 print(f"Translation preview: {translation_result[:200]}..." if translation_result else "EMPTY")
-                
+
                 import re
                 translation_result = re.sub(r"(</[a-z]+>)+$", "", translation_result)
                 raw_html_result = clean_telegram_html(translation_result)
                 rendered_html_result = translation_result
-                
+
                 print(f"Final results:")
                 print(f"  translation_result length: {len(translation_result) if translation_result else 0}")
                 print(f"  raw_html_result length: {len(raw_html_result) if raw_html_result else 0}")
                 print(f"  rendered_html_result length: {len(rendered_html_result) if rendered_html_result else 0}")
                 print(f"{'='*50}")
-                
+
             except Exception as e:
                 print(f"TRANSLATION ERROR: {e}")
                 print(f"Error type: {type(e)}")

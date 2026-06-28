@@ -2,7 +2,7 @@ from flask import Blueprint, render_template, jsonify, request
 from flask_login import current_user, login_required
 from translator.config import DEFAULT_STATS
 from html import escape
-import bleach
+import nh3
 from translator.services.event_logger import EventRecorder
 from typing import Dict, Any
 import logging
@@ -12,7 +12,7 @@ event_recorder = EventRecorder()
 
 def escape_json_strings(obj):
     if isinstance(obj, str):
-        clean = bleach.clean(obj)            # strip/escape any HTML
+        clean = nh3.clean(obj, tags=set())   # strip all HTML tags (content kept)
         return escape(clean)                 # then HTML-escape for safety
     if isinstance(obj, list):
         return [escape_json_strings(v) for v in obj]

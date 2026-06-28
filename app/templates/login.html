@@ -47,10 +47,11 @@
           {% endif %}
         {% endwith %}
 
-        <form method="POST" 
-              class="mt-8 space-y-6" 
+        <form method="POST"
+              class="mt-8 space-y-6"
               action="{{ url_for('login', next=request.args.get('next')) }}"
               autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
           <div class="space-y-4">
             <div>
               <label for="password" class="block text-sm font-medium text-gray-700 sm:text-base">

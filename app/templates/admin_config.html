@@ -21,6 +21,7 @@
     <div class="flex items-center gap-2 ml-4">
       <div class="admin-btn-group">
         <form method="POST" class="flex-grow">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
           <button type="submit" name="action" value="load"
             class="admin-btn admin-btn-primary"
             aria-label="Load existing configuration"
@@ -35,6 +36,7 @@
           </button>
         </form>
         <form method="POST" class="flex-grow">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
           <input type="hidden" name="action" value="restart" />
           <button type="submit"
             class="admin-btn admin-btn-warning"
@@ -102,6 +104,7 @@
 
     <!-- Configuration Form -->
     <form method="POST" class="space-y-8" @submit.prevent="showConfirmModal">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
       <!-- Main Bot Settings Section -->      <section id="main-bot" class="scroll-mt-6">
         <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h2 class="text-lg font-semibold mb-4">Main Bot Settings</h2>

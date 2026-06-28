@@ -131,10 +131,12 @@ async function handleFormSubmit(e) {
         `;
         
         // Send changes to server
+        const csrfMeta = document.querySelector('meta[name="csrf-token"]');
         const response = await fetch('/admin/events/update', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                'X-CSRFToken': csrfMeta ? csrfMeta.content : '',
             },
             body: JSON.stringify({
                 eventId: currentEventObj.id,

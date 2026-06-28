@@ -3,6 +3,8 @@ import sys
 from datetime import datetime
 from flask import Flask, request, render_template, redirect, url_for, flash, Blueprint, jsonify, current_app
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
+from flask_wtf import CSRFProtect
+from werkzeug.security import check_password_hash
 from admin_dashboard import admin_bp
 from admin_prompt import admin_prompt_bp
 from admin_config import admin_config_bp  
@@ -31,16 +33,28 @@ app = Flask(__name__)
 # Opt in locally with FLASK_DEBUG=1.
 app.config["DEBUG"] = os.getenv("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
 
-# Session signing key. Never ship a hardcoded default; if unset, use an ephemeral
-# random key (sessions reset on restart) and warn rather than a guessable constant.
+# Session signing key. Never ship a hardcoded default. A missing key is FATAL in
+# production (an ephemeral key would silently drop every session on restart and
+# defeats "remember me"); only DEBUG/local runs fall back to an ephemeral key.
 _secret = os.getenv("SECRET_KEY")
 if not _secret:
-    _secret = secrets.token_hex(32)
-    logging.warning(
-        "SECRET_KEY not set; using an ephemeral random key. Sessions will reset on "
-        "restart. Set SECRET_KEY in the environment for production."
-    )
+    if app.config["DEBUG"]:
+        _secret = secrets.token_hex(32)
+        logging.warning(
+            "SECRET_KEY not set; using an ephemeral random key (DEBUG only). "
+            "Sessions will reset on restart. Set SECRET_KEY for production."
+        )
+    else:
+        raise RuntimeError(
+            "SECRET_KEY is not set. Refusing to start without a stable, persistent "
+            "session key in production. Set SECRET_KEY in the environment."
+        )
 app.secret_key = _secret
+
+# CSRF protection for all state-changing (POST/PUT/PATCH/DELETE) requests. Tokens
+# are supplied by server-rendered forms ({{ csrf_token() }}) and by fetch() calls
+# via the X-CSRFToken header (read from the <meta name="csrf-token"> tag).
+csrf = CSRFProtect(app)
 
 # --- Setup Flask-Login ---
 login_manager = LoginManager()
@@ -48,15 +62,29 @@ login_manager.init_app(app)
 login_manager.login_view = "login"  # type: ignore
 
 # --- Static Admin User ---
-# No "admin" default — that would leave the panel open. If unset, generate a
-# random password (effectively disabling login until the operator sets one).
+# Prefer a hashed password (ADMIN_PASSWORD_HASH, produced with
+# werkzeug.security.generate_password_hash); fall back to a plaintext
+# ADMIN_PASSWORD compared in constant time. If neither is set, login is disabled
+# (no "admin" default that would leave the panel open).
+ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-if not ADMIN_PASSWORD:
-    ADMIN_PASSWORD = secrets.token_urlsafe(24)
+if not ADMIN_PASSWORD_HASH and not ADMIN_PASSWORD:
     logging.error(
-        "ADMIN_PASSWORD not set; login is disabled (random password generated). "
-        "Set ADMIN_PASSWORD in the environment to enable the admin panel."
+        "Neither ADMIN_PASSWORD_HASH nor ADMIN_PASSWORD is set; login is disabled. "
+        "Set one in the environment to enable the admin panel "
+        "(ADMIN_PASSWORD_HASH is preferred)."
     )
+
+
+def _password_ok(pwd: str) -> bool:
+    """Verify the submitted admin password (hashed if available, else timing-safe)."""
+    if not pwd:
+        return False
+    if ADMIN_PASSWORD_HASH:
+        return check_password_hash(ADMIN_PASSWORD_HASH, pwd)
+    if ADMIN_PASSWORD:
+        return secrets.compare_digest(pwd, ADMIN_PASSWORD)
+    return False
 
 
 class Admin(UserMixin):
@@ -81,7 +109,7 @@ def load_user(user_id):
 def login():
     if request.method == "POST":
         pwd = request.form.get("password", "")
-        if pwd == ADMIN_PASSWORD:
+        if _password_ok(pwd):
             user = Admin()
             login_user(user)
             flash("Logged in, let’s go 🚀", "success")

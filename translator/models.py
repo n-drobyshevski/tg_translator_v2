@@ -15,8 +15,11 @@ class MetadataRequest:
     message_id: int
     file_id: Optional[str] = None
     message_entities: Optional[List[Dict[str, Any]]] = None
+    # Built only inside async handlers, so a running loop is guaranteed.
+    # get_running_loop() replaces the deprecated get_event_loop() (which is
+    # slated to stop implicitly creating a loop in newer CPython).
     response: asyncio.Future = field(
-        default_factory=lambda: asyncio.get_event_loop().create_future()
+        default_factory=lambda: asyncio.get_running_loop().create_future()
     )
 
 @dataclass

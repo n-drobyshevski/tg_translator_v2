@@ -13,7 +13,8 @@ import os
 import requests
 from translator.config import PROMPT_TEMPLATE_PATH
 from translator.bot import translate_html  # use the actual translate function
-from anthropic import Anthropic
+from translator.services.anthropic_client import get_anthropic_client
+from translator.utils.utils_async import run_with_retries
 
 admin_prompt_bp = Blueprint("admin_prompt_bp", __name__)
 
@@ -123,7 +124,7 @@ def test_translation():
         translation_result = "No input provided for translation."
     else:
         try:
-            anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+            anthropic_client = get_anthropic_client()
             payload = {
                 "Channel": "Test Channel",
                 "Text": input_text,
@@ -132,8 +133,9 @@ def test_translation():
             }
             import asyncio
 
+            # Retry transient API failures so the admin UI doesn't surface them.
             translation_result = asyncio.run(
-                translate_html(anthropic_client, payload)
+                run_with_retries(translate_html, anthropic_client, payload)
             )
         except Exception as e:
             translation_result = f"Error during translation: {e}"

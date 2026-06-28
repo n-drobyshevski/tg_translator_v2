@@ -1,4 +1,8 @@
+import html as _html
+import json
 import logging
+import os
+import re
 from typing import List, Optional, Tuple, Any
 
 import httpx
@@ -12,6 +16,23 @@ load_dotenv()
 # Default timeout for all Bot API calls.
 _HTTP_TIMEOUT = 10
 
+# Control the link preview on relayed/edited text posts. build_payload appends a
+# "Source channel:" link, which otherwise renders an unwanted preview card; the
+# default disables previews. Set DISABLE_LINK_PREVIEW=0 to restore them. This is
+# also the modern replacement for the deprecated disable_web_page_preview flag.
+DISABLE_LINK_PREVIEW = os.getenv("DISABLE_LINK_PREVIEW", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+)
+_LINK_PREVIEW_OPTIONS = {"is_disabled": True}
+
+# Shared regexes (compiled once instead of re-importing/re-compiling per call).
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+# Zero-width / BOM characters that aren't matched by \s but should be dropped.
+_ZERO_WIDTH_RE = re.compile("[​-‍⁠﻿]")
+_ZERO_WIDTH_RE = re.compile("[​-‍⁠﻿]")
 
 def sanitize_html(text: str) -> str:
     """Sanitize HTML for Telegram by removing or replacing unsupported tags."""
@@ -38,107 +59,44 @@ def normalize_for_comparison(text: str) -> str:
     """Normalize text for content comparison by removing formatting differences."""
     if not text:
         return ""
-    
-    # Remove all HTML tags for comparison
-    import re
-    text_only = re.sub(r'<[^>]+>', '', text)
-    
-    # Normalize whitespace
-    text_only = re.sub(r'\s+', ' ', text_only.strip())
-    
-    return text_only
+    # Strip HTML tags, then collapse all whitespace to single spaces.
+    return _WS_RE.sub(" ", _TAG_RE.sub("", text).strip())
 
 
 def telegram_normalize_text(text: str) -> str:
-    """
-    Normalize text to match Telegram's internal comparison.
-    This should be more comprehensive than the basic normalization.
+    """Normalize text to approximate Telegram's internal content comparison.
+
+    More aggressive than ``normalize_for_comparison``: it applies the same
+    sanitization used for sending, strips tags, decodes HTML entities with the
+    stdlib ``html.unescape`` (full entity coverage, not a hand-rolled table),
+    drops zero-width characters, and collapses all (incl. Unicode) whitespace.
     """
     if not text:
         return ""
-    
-    import re
-    
-    # First, apply the same sanitization we use for sending
     normalized = sanitize_html(text)
-    
-    # Remove all HTML tags and entities
-    normalized = re.sub(r'<[^>]+>', '', normalized)
-    
-    # Decode HTML entities
-    normalized = (
-        normalized.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", '"')
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
-    )
-    
-    # Normalize all whitespace (including newlines, tabs, etc.)
-    normalized = re.sub(r'\s+', ' ', normalized.strip())
-    
-    # Remove any remaining zero-width characters or special Unicode spaces
-    normalized = re.sub(r'[\u200B-\u200D\u2060\uFEFF\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]', ' ', normalized)
-    
-    # Final whitespace normalization
-    normalized = re.sub(r'\s+', ' ', normalized.strip())
-    
-    return normalized
+    normalized = _TAG_RE.sub("", normalized)
+    normalized = _html.unescape(normalized)
+    normalized = _ZERO_WIDTH_RE.sub("", normalized)
+    return _WS_RE.sub(" ", normalized.strip())
 
 
 def advanced_content_comparison(text1: str, text2: str) -> bool:
-    """
-    Perform advanced content comparison that tries multiple normalization strategies
-    to detect if two texts would be considered the same by Telegram.
+    """Return True if two texts would be considered identical by Telegram.
+
+    Tries progressively more aggressive normalizations (direct equality \u2192
+    send-time sanitization \u2192 full Telegram-style normalization). The last stage
+    subsumes the basic tag/whitespace pass, so no separate step is needed.
     """
     if not text1 and not text2:
         return True
     if not text1 or not text2:
         return False
-    
-    # Direct comparison
     if text1 == text2:
         return True
-    
-    # Sanitized comparison
-    s1 = sanitize_html(text1)
-    s2 = sanitize_html(text2)
-    if s1 == s2:
+    if sanitize_html(text1) == sanitize_html(text2):
         return True
-    
-    # Basic normalized comparison
-    n1 = normalize_for_comparison(s1)
-    n2 = normalize_for_comparison(s2)
-    if n1 == n2:
+    if telegram_normalize_text(text1) == telegram_normalize_text(text2):
         return True
-    
-    # Telegram-style normalization
-    t1 = telegram_normalize_text(text1)
-    t2 = telegram_normalize_text(text2)
-    if t1 == t2:
-        return True
-    
-    # Advanced whitespace and HTML normalization
-    import re
-    
-    # Remove all HTML and normalize whitespace aggressively
-    def ultra_normalize(text):
-        # Remove all HTML tags
-        text = re.sub(r'<[^>]+>', '', text)
-        # Decode entities
-        text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'").replace("&nbsp;", " ")
-        # Normalize all types of whitespace to single spaces
-        text = re.sub(r'[\s\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+', ' ', text)
-        # Remove leading/trailing whitespace
-        text = text.strip()
-        return text
-    
-    u1 = ultra_normalize(text1)
-    u2 = ultra_normalize(text2)
-    if u1 == u2:
-        return True
-    
     return False
 
 
@@ -289,14 +247,15 @@ class TelegramSender:
         for chunk in chunks:
             sanitized_chunk = sanitize_html(chunk)
             logging.info("Send message: Sending chunk to %s (chat_id %s)…", target, dest_channel_id)
-            success, r, err = await self._post_telegram(
-                url,
-                json={
-                    "chat_id": dest_channel_id,
-                    "text": sanitized_chunk,
-                    "parse_mode": "HTML",
-                },
-            )
+            body = {
+                "chat_id": dest_channel_id,
+                "text": sanitized_chunk,
+                "parse_mode": "HTML",
+            }
+            # JSON body -> link_preview_options can be a nested object directly.
+            if DISABLE_LINK_PREVIEW:
+                body["link_preview_options"] = _LINK_PREVIEW_OPTIONS
+            success, r, err = await self._post_telegram(url, json=body)
             exception_message = None
             if not success or r is None:
                 logging.error("Send message: Failed to send to %s: %s", dest_channel_id, err)
@@ -455,6 +414,9 @@ class TelegramSender:
             "text": sanitized_text,
             "parse_mode": "HTML",
         }
+        # Form-encoded body -> link_preview_options must be a JSON-encoded string.
+        if DISABLE_LINK_PREVIEW:
+            payload["link_preview_options"] = json.dumps(_LINK_PREVIEW_OPTIONS)
         posting_success = False
         api_error_code = None
         exception_message = None

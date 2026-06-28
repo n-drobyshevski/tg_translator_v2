@@ -12,9 +12,21 @@ dependencies = [
     "httpx==0.28.1",
     "requests==2.34.2",
     "python-dotenv==1.2.2",
-    "bleach==6.4.0",
+    # nh3 replaces bleach, which is end-of-life (final release 6.4.0; repo
+    # archived/read-only 2026-06-10, no further security fixes). nh3 is the
+    # maintained, Rust-backed (ammonia) HTML sanitizer.
+    "nh3>=0.2.18",
     "flask==3.1.3",
     "flask-login==0.6.3",
+    # CSRF protection for the admin POST forms.
+    "flask-wtf>=1.2.1",
+    # Explicit security floors for Flask's transitive deps so a constrained or
+    # cached resolver can't pull a vulnerable build:
+    #   werkzeug 3.1.8 -> CVE-2026-21860 (Windows safe_join path traversal)
+    #   jinja2   3.1.6 -> CVE-2025-27516 (sandbox escape)
+    "werkzeug>=3.1.8",
+    "jinja2>=3.1.6",
+    "itsdangerous>=2.2",
 ]
 
 [project.optional-dependencies]

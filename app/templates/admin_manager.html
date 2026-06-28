@@ -26,6 +26,7 @@
           <i class="fa-solid fa-filter"></i> 1. Select Source Channel
         </div>
         <form method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
           <div class="message-select-container">
             <div class="message-select-left">
               <select id="source_channel" name="source_channel" required class="message-select">
@@ -69,6 +70,7 @@
 
         <!-- Existing Message Section -->
         <div id="existing-message-section" class="{% if message_option == 'custom' %}hidden{% endif %}">          <form method="post" id="message-form" onsubmit="return validateTranslationForm(event)">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
             <input type="hidden" name="source_channel" value="{{ selected_channel_id }}" />
             <input type="hidden" name="message_option" value="existing" />
             <div class="message-select-container">
@@ -99,6 +101,7 @@
         <!-- Custom Message Section -->
         <div id="custom-message-section" class="{% if message_option != 'custom' %}hidden{% endif %}">
           <form method="post" id="custom-message-form" class="space-y-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
             <input type="hidden" name="source_channel" value="{{ selected_channel_id }}" />
             <input type="hidden" name="message_option" value="custom" />
             <input type="hidden" name="custom_message_text" id="hidden_message_text" />
@@ -287,6 +290,7 @@
           <i class="fa-solid fa-share-nodes"></i> 4. Post Translation
         </div>
         <form method="post" action="/admin/manager" id="translationForm" onsubmit="updateTargetChannelId()">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
           <!-- Hidden inputs -->
           <input type="hidden" name="source_channel" value="{{ selected_channel_id }}" />
           <input type="hidden" id="translation_message_id" name="message_id" value="{{ selected_message_id }}" />

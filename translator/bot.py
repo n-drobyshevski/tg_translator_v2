@@ -29,6 +29,7 @@ from typing import Any, Dict, Tuple
 from anthropic import Anthropic
 from translator.config import CONFIG, CACHE_DIR
 from translator.models import MetadataRequest
+from translator.services.anthropic_client import get_anthropic_client
 
 from pyrogram import filters
 from pyrogram.client import Client
@@ -306,7 +307,7 @@ def register_handlers(
         # === 0. Prepare recorder and extract metadata ===
         recorder.set(timestamp=datetime.now(timezone.utc).isoformat())
         recorder.set(source_channel_id=msg.chat.id, source_channel_name=msg.chat.title)
-        recorder.set(event_type="create")
+        recorder.set(event_type="edit")
         text = msg.text or msg.caption or ""
         file_id, file_size_bytes, media_type = get_media_info(msg, max_size)
 
@@ -316,10 +317,7 @@ def register_handlers(
             original_size=len(text),
         )
 
-        text = msg.text or msg.caption or ""
-        file_id, file_size_bytes, media_type = get_media_info(msg, max_size)
-
-        # === 1. Request metadata from PTB ===TB
+        # === 1. Request metadata from PTB ===
         req = MetadataRequest(msg.chat.id, msg.id, file_id)
         raw_entities = msg.entities or msg.caption_entities or []
         req.message_entities = [
@@ -490,7 +488,7 @@ def init_clients() -> (
             pass
     ptb_app = builder.build()
     recorder = EventRecorder()
-    anthropic_client = Anthropic(api_key=CONFIG.ANTHROPIC_API_KEY)
+    anthropic_client = get_anthropic_client()
     sender = TelegramSender()
     return pyro, ptb_app, anthropic_client, sender, recorder
 

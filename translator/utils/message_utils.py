@@ -1,3 +1,4 @@
+from html import escape
 from typing import Any, Dict, List, Optional, Tuple
 
 def get_media_info(msg, max_size: int) -> Tuple[Optional[str], Optional[int], str]:
@@ -21,10 +22,13 @@ def get_media_info(msg, max_size: int) -> Tuple[Optional[str], Optional[int], st
 
 def build_payload(msg, html_text: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     """Build payload dict for translation."""
+    # Escape dynamic values before interpolating into the <a> link / HTML so a
+    # username or title containing &, <, > or " can't break the markup.
+    title = escape(msg.chat.title or "")
     source_link = (
-        f'<a href="https://t.me/{msg.chat.username}">{msg.chat.title}</a>'
+        f'<a href="https://t.me/{escape(msg.chat.username, quote=True)}">{title}</a>'
         if getattr(msg.chat, "username", None)
-        else msg.chat.title
+        else title
     )
     html_with_source = f"{html_text}\n\nSource channel: {source_link}"
     return {
