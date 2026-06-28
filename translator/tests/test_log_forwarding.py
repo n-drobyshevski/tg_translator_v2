@@ -45,6 +45,26 @@ async def test_emit_skips_alert_logger(monkeypatch):
     assert seen == []
 
 
+async def test_emit_skips_no_forward_records(monkeypatch):
+    seen = []
+
+    async def fake_send_alert(text, key=None):
+        seen.append(text)
+
+    monkeypatch.setattr(log_forwarding, "send_alert", fake_send_alert)
+    loop = asyncio.get_running_loop()
+    handler = log_forwarding.TelegramErrorHandler(loop)
+
+    # Records logged with extra={"no_forward": True} (relay/translation failures)
+    # stay in bot.log but must not be DM'd.
+    rec = _record(msg="relay failed")
+    rec.no_forward = True
+    handler.emit(rec)
+    await asyncio.sleep(0.05)
+
+    assert seen == []
+
+
 async def test_emit_never_raises(monkeypatch):
     def boom(*_a, **_k):
         raise RuntimeError("send failed")

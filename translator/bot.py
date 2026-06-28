@@ -47,7 +47,7 @@ from translator.utils.translation_utils import translate_html
 from translator.utils.message_utils import get_media_info, build_payload
 from translator.services.telegram_sender import TelegramSender
 from translator.services.event_logger import EventRecorder
-from translator.services.error_sender import send_alert
+from translator.utils.error_format import humanize_error
 from translator.services.admin_commands import register_admin_handlers
 from translator.services.log_forwarding import attach_error_forwarding
 
@@ -334,15 +334,16 @@ def register_handlers(
                 dest_id,
             )
         except Exception as exc:
-            exception_message = str(exc)
-            api_error_code = getattr(exc, "status", None)
+            # Store a human-readable reason for the /status failures view; the raw
+            # exception goes to bot.log only. `no_forward` keeps the ERROR-log
+            # forwarder from DM'ing relay failures (they are pull-only now).
             recorder.set(
-                exception_message=exception_message, api_error_code=api_error_code
+                exception_message=humanize_error(exc),
+                api_error_code=getattr(exc, "status_code", None)
+                or getattr(exc, "status", None),
             )
-            pyro_log.error("FAILED %s: %s", msg.id, exc)
-            await send_alert(
-                f"Relay FAILED for msg {msg.id} in '{msg.chat.title}': {exc}",
-                key="relay-fail",
+            pyro_log.error(
+                "FAILED %s: %s", msg.id, exc, extra={"no_forward": True}
             )
         # === 4. Log event and finalize recorder ===
         recorder.finalize()
@@ -490,13 +491,15 @@ def register_handlers(
                 dest_id,
             )
         except Exception as exc:
-            pyro_log.error("FAILED TO EDIT %s: %s", msg.id, exc)
+            # Record the actual reason (the old code stored the still-None locals,
+            # so edit failures showed no reason). Pull-only: don't DM, just log raw.
             recorder.set(
-                exception_message=exception_message, api_error_code=api_error_code
+                exception_message=humanize_error(exc),
+                api_error_code=getattr(exc, "status_code", None)
+                or getattr(exc, "status", None),
             )
-            await send_alert(
-                f"Edit relay FAILED for msg {msg.id} in '{msg.chat.title}': {exc}",
-                key="edit-fail",
+            pyro_log.error(
+                "FAILED TO EDIT %s: %s", msg.id, exc, extra={"no_forward": True}
             )
 
         recorder.finalize()

@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from unittest.mock import patch, MagicMock
 from translator.services import telegram_sender as ts_module
@@ -84,6 +86,27 @@ async def test_send_message_success(mock_post):
     recorder.set(dest_channel_name="test", dest_channel_id=TEST_CHANNEL_ID)
     success = await sender.send_message("text", recorder)
     assert success
+
+
+@pytest.mark.asyncio
+@patch(
+    "translator.config.CHANNEL_CONFIGS",
+    {"test": ChannelConfig(channel_id=TEST_CHANNEL_ID, bot_token=TEST_BOT_TOKEN)},
+)
+@patch("httpx.AsyncClient.post")
+async def test_send_message_failure_marks_no_forward(mock_post, caplog):
+    # A send failure is recorded on the event and shown under /status, so its
+    # ERROR logs must carry extra={"no_forward": True} to skip the DM forwarder.
+    mock_post.return_value = MagicMock(status_code=400)
+    mock_post.return_value.json.return_value = {"description": "fail"}
+    sender = TelegramSender()
+    recorder = EventRecorder()
+    recorder.set(dest_channel_name="test", dest_channel_id=TEST_CHANNEL_ID)
+    with caplog.at_level(logging.ERROR):
+        await sender.send_message("text", recorder)
+    fail_records = [r for r in caplog.records if "Send message:" in r.getMessage()]
+    assert fail_records  # the failure was logged
+    assert all(getattr(r, "no_forward", False) is True for r in fail_records)
 
 
 # --- Link preview ("message filling") options -------------------------------

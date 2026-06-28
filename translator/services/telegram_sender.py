@@ -74,8 +74,12 @@ def sanitize_html(text: str) -> str:
     
     # Normalize whitespace to prevent false differences
     sanitized = "\n".join(line.rstrip() for line in sanitized.split("\n"))
+    # Collapse runs of 3+ newlines (two or more blank lines) down to a single
+    # blank line. The </p> -> "\n" replacement above stacks onto the model's own
+    # blank line between <p> blocks, which otherwise yields doubled paragraph gaps.
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
     sanitized = sanitized.strip()
-    
+
     return sanitized
 
 
@@ -281,7 +285,14 @@ class TelegramSender:
             success, r, err = await self._post_telegram(url, json=body)
             exception_message = None
             if not success or r is None:
-                logging.error("Send message: Failed to send to %s: %s", dest_channel_id, err)
+                # Relay send failures are pull-only: recorded on the event and
+                # shown under /status, so don't DM them (extra={"no_forward": True}).
+                logging.error(
+                    "Send message: Failed to send to %s: %s",
+                    dest_channel_id,
+                    err,
+                    extra={"no_forward": True},
+                )
                 if r is not None:
                     try:
                         exception_message = r.json().get("description", r.text)
@@ -299,6 +310,7 @@ class TelegramSender:
                     "Send message: Error sending message to %s: %s",
                     dest_channel_id,
                     exception_message,
+                    extra={"no_forward": True},
                 )
                 return False
             result = r.json().get("result", {})
@@ -349,7 +361,13 @@ class TelegramSender:
             data["caption"] = sanitized_caption
         success, r, err = await self._post_telegram(url, data=data)
         if not success or r is None:
-            logging.error("Failed to send %s to %s: %s", media_field, dest_channel_id, err)
+            logging.error(
+                "Failed to send %s to %s: %s",
+                media_field,
+                dest_channel_id,
+                err,
+                extra={"no_forward": True},
+            )
             recorder.set(
                 dest_message_id=sent_msg_id,
                 posting_success=posting_success,
@@ -500,6 +518,7 @@ class TelegramSender:
                     message_id,
                     channel_id,
                     err,
+                    extra={"no_forward": True},
                 )
                 api_error_code = resp.status_code if resp else None
                 exception_message = err
@@ -581,6 +600,7 @@ class TelegramSender:
                     message_id,
                     channel_id,
                     err,
+                    extra={"no_forward": True},
                 )
                 api_error_code = resp.status_code if resp else None
                 exception_message = err

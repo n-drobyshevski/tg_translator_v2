@@ -280,6 +280,45 @@ async def test_stats_uses_events_dao(admin_env, monkeypatch):
     assert "Failures: 1" in out
 
 
+async def test_status_lists_recent_failures(admin_env, monkeypatch):
+    from translator.db import events_dao
+
+    monkeypatch.setattr(
+        events_dao,
+        "load_messages",
+        lambda since_iso=None, event_type=None: [
+            {
+                "posting_success": True,
+                "exception_message": "",
+                "source_channel_name": "ok_chan",
+                "timestamp": "2026-06-28T10:00:00+00:00",
+            },
+            {
+                "posting_success": False,
+                "exception_message": "Anthropic credits exhausted. Top up under Plans & Billing.",
+                "source_channel_name": "test_source",
+                "timestamp": "2026-06-28T22:12:01+00:00",
+            },
+        ],
+    )
+    out = await admin_commands.handle_command(Msg("/status"))
+    assert "Recent failures" in out
+    assert "test_source" in out
+    assert "Anthropic credits exhausted" in out
+    # The successful event is not listed as a failure.
+    assert "ok_chan" not in out
+
+
+async def test_status_no_failures(admin_env, monkeypatch):
+    from translator.db import events_dao
+
+    monkeypatch.setattr(
+        events_dao, "load_messages", lambda since_iso=None, event_type=None: []
+    )
+    out = await admin_commands.handle_command(Msg("/status"))
+    assert "None in the last 7 days" in out
+
+
 # --- Add-channel wizard -------------------------------------------------------
 
 

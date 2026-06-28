@@ -88,11 +88,40 @@ def _cmd_help(lang: str = "en") -> str:
     return t("help_text", lang)
 
 
+def _recent_failures(lang: str = "en", lookback_days: int = 7, limit: int = 5) -> str:
+    """Recent relay failures as a '/status' section (pull-based; no push alerts).
+
+    Mirrors ``_cmd_stats``' read pattern. Returns a leading-blank-line block, or
+    "" if the event store can't be read — /status must never break on a DB hiccup.
+    """
+    try:
+        from translator.db import events_dao
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+        msgs = events_dao.load_messages(since_iso=cutoff)
+    except Exception:  # pragma: no cover - defensive
+        return ""
+    fails = [
+        m
+        for m in msgs
+        if not m.get("posting_success") and m.get("exception_message")
+    ]
+    if not fails:
+        return "\n\n" + t("status_fail_none", lang)
+    lines = [t("status_fail_header", lang, count=len(fails))]
+    for m in reversed(fails[-limit:]):  # newest first (load_messages is oldest-first)
+        ts = (m.get("timestamp") or "")[5:16].replace("T", " ")  # MM-DD HH:MM (UTC)
+        chan = html.escape(str(m.get("source_channel_name") or "?"))
+        reason = html.escape(str(m.get("exception_message") or "")[:90])
+        lines.append(t("status_fail_line", lang, time=ts, channel=chan, reason=reason))
+    return "\n\n" + "\n".join(lines)
+
+
 def _cmd_status(start_ts, query_queue, pyro, lang: str = "en") -> str:
     connected = getattr(pyro, "is_connected", None)
     qsize = query_queue.qsize() if query_queue is not None else "?"
     sources = CONFIG.get_source_channel_ids()
-    return t(
+    status = t(
         "status",
         lang,
         uptime=_fmt_uptime(start_ts),
@@ -101,6 +130,7 @@ def _cmd_status(start_ts, query_queue, pyro, lang: str = "en") -> str:
         queue=qsize,
         model=html.escape(str(CONFIG.ANTHROPIC_MODEL)),
     )
+    return status + _recent_failures(lang)
 
 
 def _cmd_stats(args: List[str], lang: str = "en") -> str:

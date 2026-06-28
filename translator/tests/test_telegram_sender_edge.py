@@ -23,6 +23,13 @@ def test_sanitize_html_complex():
         print(repr(result))
     assert result == expected
 
+def test_sanitize_html_collapses_doubled_paragraph_gaps():
+    # The model wraps paragraphs in <p> and separates the blocks with its own
+    # blank line; the </p> -> "\n" replacement must not stack onto that blank
+    # line and produce more than one blank line between paragraphs.
+    html = "<p>First</p>\n\n<p>Second</p>\n\n<p>Third</p>"
+    assert sanitize_html(html) == "First\n\nSecond\n\nThird"
+
 def test_normalize_comparison_empty():
     assert normalize_for_comparison("") == ""
 

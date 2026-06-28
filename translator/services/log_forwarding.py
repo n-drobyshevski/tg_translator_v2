@@ -36,7 +36,12 @@ class TelegramErrorHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         # Skip our own alert plumbing and guard against reentry (defense 1 & 2).
-        if record.name == "ALERT" or self._in_emit:
+        # Also honor an explicit opt-out: records logged with
+        # ``extra={"no_forward": True}`` (relay/translation failures, which are
+        # pull-only via /status) stay in bot.log but are never DM'd.
+        if record.name == "ALERT" or self._in_emit or getattr(
+            record, "no_forward", False
+        ):
             return
         try:
             self._in_emit = True

@@ -167,7 +167,7 @@ _EN: Dict[str, str] = {
         "<b>Relay bot — admin commands</b>\n"
         "/menu — open the button menu (easiest)\n"
         "/help — this message\n"
-        "/status — uptime, channels, queue depth\n"
+        "/status — uptime, channels, queue depth, recent failures\n"
         "/stats [days] — relay counts &amp; failures (default 7)\n"
         "/cost — token usage, estimated cost &amp; next invoice\n"
         "/channels — configured channel pairs\n"
@@ -195,6 +195,10 @@ _EN: Dict[str, str] = {
         "Metadata queue depth: {queue}\n"
         "Model: {model}"
     ),
+    # /status — recent failures section (pull-based; replaces push alerts).
+    "status_fail_header": "<b>Recent failures (last 7d) — {count}</b>",
+    "status_fail_none": "<b>Recent failures</b>\nNone in the last 7 days ✅",
+    "status_fail_line": "{time} UTC · {channel} · {reason}",
     # /stats.
     "stats_usage": "❌ Usage: /stats [days]",
     "stats_days_range": "❌ days must be 1..30",
@@ -441,7 +445,7 @@ _BE: Dict[str, str] = {
         "<b>Рэлэй-бот — адмінскія каманды</b>\n"
         "/menu — адкрыць меню з кнопкамі (найпрасцей)\n"
         "/help — гэта паведамленне\n"
-        "/status — час працы, каналы, чарга\n"
+        "/status — час працы, каналы, чарга, нядаўнія збоі\n"
         "/stats [дні] — лік рэтрансляцый і збояў (па змаўчанні 7)\n"
         "/cost — выкарыстанне токенаў, ацэнка кошту і наступны рахунак\n"
         "/channels — наладжаныя пары каналаў\n"
@@ -469,6 +473,10 @@ _BE: Dict[str, str] = {
         "Глыбіня чаргі метададзеных: {queue}\n"
         "Мадэль: {model}"
     ),
+    # /status — нядаўнія збоі (без push-абвестак; глядзіце праз меню).
+    "status_fail_header": "<b>Нядаўнія збоі (апошнія 7д) — {count}</b>",
+    "status_fail_none": "<b>Нядаўнія збоі</b>\nНяма за апошнія 7 дзён ✅",
+    "status_fail_line": "{time} UTC · {channel} · {reason}",
     # /stats.
     "stats_usage": "❌ Ужыванне: /stats [дні]",
     "stats_days_range": "❌ дні мусяць быць 1..30",
