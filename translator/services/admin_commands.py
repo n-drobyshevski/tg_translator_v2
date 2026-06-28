@@ -591,6 +591,7 @@ def register_admin_handlers(
             "/menu",
             "/start",
             "/settings",
+            "/aimenu",
             "/adminsmenu",
             "/channelsmenu",
         ):
@@ -619,6 +620,17 @@ def register_admin_handlers(
                 )
             except Exception:
                 log.exception("failed to send settings menu")
+            return
+        if token == "/aimenu":
+            title, rows = admin_menu.ai_entry(lang)
+            try:
+                await msg.reply_text(
+                    title,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=admin_menu.to_inline_markup(rows),
+                )
+            except Exception:
+                log.exception("failed to send AI settings menu")
             return
         if token == "/adminsmenu":
             title, rows = admin_menu.admins_entry(lang)

@@ -69,7 +69,7 @@ _EN: Dict[str, str] = {
     ),
     # Inline Settings tree.
     "settings_title": "<b>⚙️ Settings</b>\n\n{summary}\n\nPick a setting to change.",
-    "settings_btn_ai": "🤖 AI Settings",
+    "btn_ai": "🤖 AI Settings",
     "settings_btn_model": "🤖 Set Model",
     "settings_btn_temp": "🌡️ Temperature",
     "settings_btn_tokens": "🔢 Max Tokens",
@@ -343,7 +343,7 @@ _BE: Dict[str, str] = {
     ),
     # Inline Settings tree.
     "settings_title": "<b>⚙️ Налады</b>\n\n{summary}\n\nВыберыце налада для змены.",
-    "settings_btn_ai": "🤖 Налады ІІ",
+    "btn_ai": "🤖 Налады ІІ",
     "settings_btn_model": "🤖 Задаць мадэль",
     "settings_btn_temp": "🌡️ Тэмпература",
     "settings_btn_tokens": "🔢 Макс. токенаў",

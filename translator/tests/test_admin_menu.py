@@ -69,10 +69,23 @@ def test_nav_settings_returns_settings_rows(admin_env):
     res = admin_menu.handle_callback("nav:settings")
     assert res.rows is not None
     data = _flat_data(res.rows)
-    assert "nav:ai" in data
-    assert "nav:model" not in data  # moved under AI Settings
+    assert "nav:ai" not in data  # AI Settings is now a top-level menu
+    assert "nav:model" not in data
     assert "nav:rmch" in data
     assert "nav:close" in data
+
+
+def test_ai_is_top_level_reply_button():
+    labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
+    assert admin_i18n.t("btn_ai") in labels
+    assert admin_menu.resolve_button_label(admin_i18n.t("btn_ai")) == "/aimenu"
+
+
+def test_ai_entry_returns_menu(admin_env):
+    title, rows = admin_menu.ai_entry()
+    data = _flat_data(rows)
+    for cd in ("nav:model", "nav:temp", "nav:tokens", "nav:prompt", "nav:cost"):
+        assert cd in data
 
 
 def test_nav_ai_lists_children(admin_env):
@@ -80,7 +93,7 @@ def test_nav_ai_lists_children(admin_env):
     data = _flat_data(res.rows)
     for cd in ("nav:model", "nav:temp", "nav:tokens", "nav:prompt", "nav:cost"):
         assert cd in data
-    assert "nav:settings" in data  # back to Settings
+    assert "nav:close" in data  # top-level menu: closes rather than going back
 
 
 def test_nav_prompt_menu_back_to_ai(admin_env):
@@ -107,7 +120,7 @@ def test_ai_submenus_back_to_ai(admin_env, target):
     assert "nav:ai" in _flat_data(res.rows)
 
 
-@pytest.mark.parametrize("target", ["log", "rmch", "ai"])
+@pytest.mark.parametrize("target", ["log", "rmch"])
 def test_settings_submenus_back_to_settings(admin_env, target):
     res = admin_menu.handle_callback(f"nav:{target}")
     assert res.rows is not None

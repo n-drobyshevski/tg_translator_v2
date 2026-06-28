@@ -58,6 +58,7 @@ Rows = List[Row]
 BUTTON_KEYS = {
     "btn_status": "/status",
     "btn_stats": "/stats",
+    "btn_ai": "/aimenu",
     "btn_channels": "/channelsmenu",
     "btn_admins": "/adminsmenu",
     "btn_prompt": "/prompt",
@@ -88,14 +89,14 @@ def resolve_button_label(text: Optional[str]) -> Optional[str]:
 def build_reply_keyboard(lang: str = "en") -> List[List[str]]:
     """Spec for the persistent reply keyboard (rows of plain labels).
 
-    The prompt template now lives under 🛠️ Settings → 🤖 AI Settings → 📝 Prompt
-    (it's an AI config), so it's no longer a top-level reply-keyboard button.
+    🤖 AI Settings is a top-level entry (its own inline menu via /aimenu); the
+    prompt template lives inside it (🤖 AI Settings → 📝 Prompt).
     """
     return [
         [t("btn_status", lang), t("btn_stats", lang)],
-        [t("btn_channels", lang), t("btn_admins", lang)],
-        [t("btn_reload", lang), t("btn_help", lang)],
-        [t("btn_settings", lang)],
+        [t("btn_ai", lang), t("btn_channels", lang)],
+        [t("btn_admins", lang), t("btn_reload", lang)],
+        [t("btn_help", lang), t("btn_settings", lang)],
     ]
 
 
@@ -134,7 +135,6 @@ class CallbackResult:
 def _settings_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = t("settings_title", lang, summary=admin_commands._config_summary(lang))
     rows: Rows = [
-        [(t("settings_btn_ai", lang), "nav:ai")],
         [(t("settings_btn_log", lang), "nav:log")],
         [(t("settings_btn_rmch", lang), "nav:rmch")],
         [(t("btn_admins", lang), "nav:admins")],
@@ -161,7 +161,9 @@ def _ai_menu(lang: str = "en") -> Tuple[str, Rows]:
         ],
         [(t("btn_prompt", lang), "nav:prompt")],
         [(t("settings_btn_cost", lang), "nav:cost")],
-        _back_to_settings(lang),
+        # AI Settings is a top-level menu (peer of Settings), so it closes
+        # rather than navigating "back" to a parent.
+        [(t("settings_btn_close", lang), "nav:close")],
     ]
     return title, rows
 
@@ -329,6 +331,11 @@ def build_menu(menu_id: str, lang: str = "en") -> Tuple[str, Rows]:
 def settings_entry(lang: str = "en") -> Tuple[str, Rows]:
     """Title + rows for the top-level Settings menu (used by the DM wrapper)."""
     return _settings_menu(lang)
+
+
+def ai_entry(lang: str = "en") -> Tuple[str, Rows]:
+    """Title + rows for the top-level AI Settings menu (the /aimenu button)."""
+    return _ai_menu(lang)
 
 
 def admins_entry(lang: str = "en") -> Tuple[str, Rows]:
