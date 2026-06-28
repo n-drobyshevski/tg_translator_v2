@@ -8,6 +8,19 @@ from translator.config import CONFIG, load_prompt_template
 
 PROMPT_TEMPLATE = load_prompt_template()
 
+
+def reload_prompt_template() -> str:
+    """Re-read prompt_template.txt into the module global used by build_messages.
+
+    The bot loads ``PROMPT_TEMPLATE`` once at import, so a live edit (the
+    ``/setprompt`` DM command) must call this to take effect without a restart.
+    ``build_messages`` reads the global at call time, so the next translation
+    picks up the new template immediately.
+    """
+    global PROMPT_TEMPLATE
+    PROMPT_TEMPLATE = load_prompt_template()
+    return PROMPT_TEMPLATE
+
 # Instruction used for very short posts, which bypass the full template.
 SHORT_SYSTEM = (
     "You are a translator. Translate the user's HTML message literally from "

@@ -48,6 +48,8 @@ from translator.utils.message_utils import get_media_info, build_payload
 from translator.services.telegram_sender import TelegramSender
 from translator.services.event_logger import EventRecorder
 from translator.services.error_sender import send_alert
+from translator.services.admin_commands import register_admin_handlers
+from translator.services.log_forwarding import attach_error_forwarding
 
 # PTB optional rate limiter
 try:
@@ -198,8 +200,16 @@ def register_handlers(
 ):
     max_size = 20 * 1024 * 1024
 
+    # Read the source-channel set LIVE on every update (instead of capturing it
+    # at registration via filters.chat(...)) so a channel added/removed from a
+    # DM (CONFIG.reload()) takes effect without restarting the bot.
+    source_filter = filters.create(
+        lambda _f, _c, m: bool(getattr(m, "chat", None))
+        and m.chat.id in CONFIG.get_source_channel_ids()
+    )
+
     # The following handler matches ALL channel messages, which can cause duplicate handling
-    @pyro.on_message(filters.channel & filters.chat(CONFIG.get_source_channel_ids()))
+    @pyro.on_message(filters.channel & source_filter)
     async def handle_message(_: Client, msg):
         pyro_log.info("\n\n")
         pyro_log.info("=============================================")
@@ -332,9 +342,7 @@ def register_handlers(
         pyro_log.info("==== END HANDLING MESSAGE %s ====", msg.id)
         pyro_log.info("=============================================")
 
-    @pyro.on_edited_message(
-        filters.channel & filters.chat(CONFIG.get_source_channel_ids())
-    )
+    @pyro.on_edited_message(filters.channel & source_filter)
     async def handle_edit_message(_: Client, msg):
         pyro_log.info("\n\n")
         pyro_log.info("=============================================")
@@ -508,9 +516,20 @@ async def main_async():
                 raise
     # --- end single-instance guard ---
 
+    start_ts = time.monotonic()
     pyro, ptb_app, anthropic, sender, event_recorder = init_clients()
 
     register_handlers(pyro, anthropic, sender, event_recorder)
+    # Admin DM control surface (status/config/channels/prompt). query_queue and
+    # start_ts are passed in to avoid importing back into this module.
+    register_admin_handlers(
+        pyro,
+        anthropic,
+        sender,
+        event_recorder,
+        query_queue=query_queue,
+        start_ts=start_ts,
+    )
     # register_channel_logger(pyro)
 
     await ptb_app.initialize()
@@ -522,6 +541,9 @@ async def main_async():
             loop.add_signal_handler(sig, stop_event.set)
         except NotImplementedError:
             pass
+
+    # Forward ERROR-level logs to the admin DM now that the loop is running.
+    attach_error_forwarding(loop)
 
     asyncio.create_task(ptb_worker(ptb_app, stop_event))
 

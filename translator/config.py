@@ -57,9 +57,28 @@ class Config:
         self.SOURCE_TEST_ID = int(self._require("TEST_CHANNEL"))
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
+        # Admin Telegram user id(s) allowed to control the bot via DM and to
+        # receive error alerts. Comma/semicolon separated to allow several.
+        self.ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")
+        self.ADMIN_CHAT_IDS = [
+            int(x)
+            for x in self.ADMIN_CHAT_ID.replace(";", ",").split(",")
+            if x.strip().lstrip("-").isdigit()
+        ]
+
+        # Logical channel names are env-driven so an admin can add/remove a pair
+        # from a DM (write LOGICAL_CHANNELS + the leaf vars, then reload) with no
+        # code change. Unset → the three historical defaults (back-compat).
+        default_names = "christianvision,shaltnotkill,test"
+        logical_names = [
+            n.strip()
+            for n in os.getenv("LOGICAL_CHANNELS", default_names).split(",")
+            if n.strip()
+        ]
+
         # Load channel mappings
         self.channels: Dict[str, ChannelInfo] = {}
-        for logical in ("christianvision", "shaltnotkill", "test"):
+        for logical in logical_names:
             src_env = f"{logical.upper()}_CHANNEL"
             tgt_env = f"{logical.upper()}_EN_CHANNEL_ID"
             src_id = int(self._require(src_env))
@@ -86,6 +105,11 @@ class Config:
                     channel_type="destination",
                     pair_key=src_id,
                 )
+
+        # Keep the module-level CHANNEL_CONFIGS (captured by-value inside
+        # TelegramSender at construction) in sync — it must be MUTATED IN PLACE,
+        # never rebound, or the sender keeps pointing at the stale dict.
+        rebuild_channel_configs(self)
 
     def _require(self, var: str) -> str:
         val = os.getenv(var)
@@ -151,7 +175,14 @@ class Config:
             "TELEGRAM_API_ID": self.TELEGRAM_API_ID,
             "TELEGRAM_API_HASH": self.TELEGRAM_API_HASH,
             "ANTHROPIC_API_KEY": self.ANTHROPIC_API_KEY,
+            "ANTHROPIC_MODEL": self.ANTHROPIC_MODEL,
+            "ANTHROPIC_MAX_TOKENS": self.ANTHROPIC_MAX_TOKENS,
+            "ANTHROPIC_TEMPERATURE": self.ANTHROPIC_TEMPERATURE,
             "LOG_LEVEL": self.LOG_LEVEL,
+            "ADMIN_CHAT_IDS": self.ADMIN_CHAT_IDS,
+            "LOGICAL_CHANNELS": [
+                n for n, i in self.channels.items() if i.channel_type == "source"
+            ],
             "channels": {n: info.__dict__ for n, info in self.channels.items()},
         }
 
@@ -252,7 +283,28 @@ class Config:
             logging.error(f"Error searching events log: {e}")
             return None
 
-# Singleton config
+# ChannelConfig map consumed by telegram_sender. This dict is captured BY VALUE
+# (TelegramSender stores `self.configs = CHANNEL_CONFIGS` at construction), so
+# reloads must mutate it in place — never reassign the name. Defined before the
+# CONFIG singleton because Config.reload() calls rebuild_channel_configs().
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+CHANNEL_CONFIGS: Dict[str, ChannelConfig] = {}
+
+
+def rebuild_channel_configs(config: "Config | None" = None) -> None:
+    """Repopulate CHANNEL_CONFIGS in place from a config's destination channels."""
+    cfg = config if config is not None else CONFIG
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    CHANNEL_CONFIGS.clear()
+    for logical, info in cfg.channels.items():
+        if info.channel_type == "destination":
+            CHANNEL_CONFIGS[logical] = ChannelConfig(
+                channel_id=int(info.channel_id),
+                bot_token=token,
+            )
+
+
+# Singleton config (its reload() populates CHANNEL_CONFIGS via rebuild above)
 CONFIG = Config()
 
 # Paths and defaults
@@ -281,14 +333,3 @@ def load_prompt_template() -> str:
         if PROMPT_TEMPLATE_PATH.exists()
         else "{message_text}"
     )
-
-
-# Build ChannelConfig map for telegram_sender
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHANNEL_CONFIGS: Dict[str, ChannelConfig] = {}
-for logical, info in CONFIG.channels.items():
-    if info.channel_type == "destination":
-        CHANNEL_CONFIGS[logical] = ChannelConfig(
-            channel_id=int(info.channel_id),
-            bot_token=BOT_TOKEN,
-        )

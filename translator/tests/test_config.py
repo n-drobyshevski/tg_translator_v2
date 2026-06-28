@@ -1,6 +1,7 @@
 import os
 import pytest
 from translator.config import CONFIG
+import translator.config as config_module
 
 def test_config_env(monkeypatch):
     # Set all required environment variables
@@ -109,3 +110,39 @@ def test_channel_pairs(monkeypatch):
     assert CONFIG.get_destination_id(11) == 12  # christianvision -> christianvision_en
     assert CONFIG.get_destination_id(22) == 23  # shaltnotkill -> shaltnotkill_en
     assert CONFIG.get_destination_id(33) == 34  # test -> test_en
+
+
+def test_admin_chat_ids_parsing(monkeypatch):
+    set_all_env(monkeypatch)
+    monkeypatch.setenv("ADMIN_CHAT_ID", "111, 222; -333")
+    CONFIG.reload()
+    assert CONFIG.ADMIN_CHAT_IDS == [111, 222, -333]
+    monkeypatch.setenv("ADMIN_CHAT_ID", "")
+    CONFIG.reload()
+    assert CONFIG.ADMIN_CHAT_IDS == []
+
+
+def test_logical_channels_env_driven(monkeypatch):
+    set_all_env(monkeypatch)
+    monkeypatch.delenv("LOGICAL_CHANNELS", raising=False)
+    CONFIG.reload()
+    assert len(CONFIG.channels) == 6  # default three pairs
+
+    monkeypatch.setenv("LOGICAL_CHANNELS", "test")
+    CONFIG.reload()
+    assert len(CONFIG.channels) == 2  # only the test pair built
+    assert CONFIG.get_channel_id("test") == 33
+
+
+def test_channel_configs_mutated_in_place(monkeypatch):
+    """CHANNEL_CONFIGS is captured by-value by TelegramSender → must keep identity."""
+    set_all_env(monkeypatch)
+    monkeypatch.delenv("LOGICAL_CHANNELS", raising=False)
+    CONFIG.reload()
+    same_obj = config_module.CHANNEL_CONFIGS
+    monkeypatch.setenv("NEWS_CHANNEL", "55")
+    monkeypatch.setenv("NEWS_EN_CHANNEL_ID", "56")
+    monkeypatch.setenv("LOGICAL_CHANNELS", "christianvision,shaltnotkill,test,news")
+    CONFIG.reload()
+    assert config_module.CHANNEL_CONFIGS is same_obj  # never rebound
+    assert any(c.channel_id == 56 for c in config_module.CHANNEL_CONFIGS.values())

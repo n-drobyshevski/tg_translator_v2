@@ -10,7 +10,8 @@ Flask admin web app for monitoring throughput, editing the prompt, and manually
 re-translating / re-posting individual messages.
 
 There are **two independent entry points** that share the `translator` package
-and a single JSON event log:
+and a single SQLite event store (`translator/cache/events.db`; see the event-store
+section — `STORAGE_BACKEND=json` falls back to the legacy `events.json`):
 
 - `translator/bot.py` — the long-running relay bot (the production workload).
 - `app/flask_app.py` — the admin dashboard (operations + observability).
@@ -43,23 +44,37 @@ tests need no decorator; `python_files = tests/test_*.py`).
 ## Configuration
 
 All config comes from environment variables, loaded from a `.env` at the repo
-root via `python-dotenv`. `translator/config.py` builds a frozen `Config`
-singleton (`CONFIG`) at import time and **raises `RuntimeError` on any missing
-required variable** — importing almost anything will fail without a complete env.
+root via `python-dotenv`. `translator/config.py` builds the `Config` singleton
+(`CONFIG`) at import time and **raises `RuntimeError` on any missing required
+variable** — importing almost anything will fail without a complete env. `Config`
+is **not** frozen: `CONFIG.reload()` re-reads `os.environ` and rebuilds the
+channel map, which is how the DM admin commands apply changes live (see below).
 
-Channels are organized as **logical pairs**. For each logical name in
-`("christianvision", "shaltnotkill", "test")` the config reads:
+Channels are organized as **logical pairs**. The set of logical names is
+env-driven via `LOGICAL_CHANNELS` (comma-separated; defaults to
+`christianvision,shaltnotkill,test` for back-compat). For each logical name the
+config reads:
 
 - `<NAME>_CHANNEL` — source channel ID (Russian)
 - `<NAME>_EN_CHANNEL_ID` — destination channel ID (English)
+- `<NAME>_CHANNEL_NAME` / `<NAME>_EN_CHANNEL_NAME` — optional display names
 
 These become two `ChannelInfo` entries (`<name>` as `"source"`, `<name>_en` as
 `"destination"`) that point at each other via `pair_key`. The lookup helpers
 (`get_destination_id`, `get_channel_name`, `get_source_channel_ids`) are the
 canonical way to resolve channels — use them rather than reading env vars
 directly. Other required vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID`,
-`TELEGRAM_API_HASH`, `ANTHROPIC_API_KEY`, `TEST_CHANNEL`. Admin app also reads
-`ADMIN_PASSWORD`, `SECRET_KEY`.
+`TELEGRAM_API_HASH`, `ANTHROPIC_API_KEY`, `TEST_CHANNEL` (the `test` pair is also
+"protected" — the DM `/removechannel` refuses it because `TEST_CHANNEL` is
+required independently of `LOGICAL_CHANNELS`). Optional: `ADMIN_CHAT_ID` (admin
+Telegram user id(s), comma/semicolon-separated → `CONFIG.ADMIN_CHAT_IDS`; gates
+DM commands and receives error alerts). Admin app also reads `ADMIN_PASSWORD`,
+`SECRET_KEY`.
+
+> **`CHANNEL_CONFIGS` is captured by value** by `TelegramSender` at construction
+> (`self.configs = CHANNEL_CONFIGS`), so `Config.reload()` mutates that dict
+> **in place** via `rebuild_channel_configs()` — never rebind the name, or the
+> sender keeps pointing at a stale dict.
 
 > Security note: the working-tree `.env` currently contains **real, live API
 > keys and tokens**. It is gitignored, but treat these as secrets — do not echo
@@ -70,12 +85,19 @@ directly. Other required vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID`,
 The bot runs **two Telegram clients at once** because neither alone exposes
 everything needed:
 
-1. **Pyrogram** (`Client`, MTProto, user-level) listens to source channels via
-   `@pyro.on_message` / `@pyro.on_edited_message` filtered to
-   `CONFIG.get_source_channel_ids()`. It receives full message content and
-   entities.
+1. **Pyrogram** (`Client`, MTProto) runs as the **bot account**
+   (`bot_token=...`, the maintained `kurigram` fork) and listens to source
+   channels via `@pyro.on_message` / `@pyro.on_edited_message`. The source filter
+   is a **live custom filter** (`filters.create(... m.chat.id in
+   CONFIG.get_source_channel_ids())`), read fresh on every update — not
+   `filters.chat(...)` captured at registration — so a channel added/removed from
+   a DM takes effect after `CONFIG.reload()` with no restart. Because it's a bot
+   account it also receives **private DMs**, which powers the admin command
+   surface (below).
 2. **python-telegram-bot** (`Application`, Bot API) cannot listen to arbitrary
-   channels but *can* resolve chat metadata and file download links.
+   channels but *can* resolve chat metadata and file download links. It is used
+   only for `get_chat`/`get_file` via `ptb_worker`; it does **not** poll for
+   updates.
 
 They are bridged by an `asyncio.Queue` + `asyncio.Future` handshake:
 
@@ -116,6 +138,45 @@ lock, `utils/single_instance.py`) and refuses to start if another instance holds
 it — this is the real single-instance guard (the old `PRAGMA quick_check` on
 `bot.session` only detected a *locked* session, not a second idle instance; it is
 kept purely as a session-corruption check).
+
+## Architecture — DM admin control & error forwarding
+
+The bot exposes an **operator control surface over a private Telegram DM**, gated
+to `CONFIG.ADMIN_CHAT_IDS`. Because the Pyrogram client is a bot account it
+receives DMs directly — no PTB polling is involved.
+
+- `services/admin_commands.py` registers one `filters.private & _admin_filter()`
+  handler. The dispatch entry point `handle_command(msg, ...)` is deliberately
+  free of Pyrogram plumbing so it's unit-testable with a fake message. Commands:
+  read-only `/help /status /stats /config /channels /prompt`; writable
+  `/setmodel /settemp /setmaxtokens /setloglevel /setprompt`; channel management
+  `/addchannel /editchannel /removechannel`; and `/reload`. Replies are
+  HTML-escaped and truncated under the 4096-char cap.
+- **Persistence:** writable settings are saved to the shared root `.env` via
+  `services/env_store.py` (`set_env_var`/`unset_env_var` — atomic temp-file +
+  `os.replace`, preserves comments/secrets/ordering, only the target key is
+  rewritten) **and** applied live with `CONFIG.reload()`. So changes survive a
+  restart and are visible to the Flask app. `/setprompt` writes
+  `prompt_template.txt` (with a `.bak`) and calls
+  `translation_utils.reload_prompt_template()` — needed because `PROMPT_TEMPLATE`
+  is a module global frozen at import (model/temp/max-tokens, by contrast, are
+  read fresh from `CONFIG` per translation, so they apply on the next message).
+  Prompt input is validated by the shared `utils/prompt_validation.validate_prompt`
+  (also used by `app/admin_prompt.py`).
+- **`/addchannel`** writes the leaf vars first and appends the name to
+  `LOGICAL_CHANNELS` **last**, then reloads, so a half-written pair can't make
+  `reload()` raise. Caveat surfaced in the reply: the bot must already be an
+  admin/member of the source channel or Telegram delivers nothing.
+- **Error forwarding:** `services/error_sender.send_alert` (httpx → Bot API,
+  throttled ~300s per signature `key`) now reads `ADMIN_ALERT_CHAT_ID` **or**
+  falls back to `ADMIN_CHAT_ID` — previously it was a silent no-op since `.env`
+  only defines the latter. `services/log_forwarding.py` additionally attaches a
+  root-logger `TelegramErrorHandler` (wired in `main_async` once the loop exists)
+  that bridges sync `emit` → async `send_alert` via `run_coroutine_threadsafe`,
+  so **any** ERROR-level log is DM'd. Recursion/flood guards: it skips the
+  `ALERT` logger, holds an `_in_emit` reentrancy flag, and relies on the
+  send_alert throttle. (Note: the admin must `/start` the bot once before
+  Telegram allows it to send DMs.)
 
 ## Architecture — the event store (SQLite)
 

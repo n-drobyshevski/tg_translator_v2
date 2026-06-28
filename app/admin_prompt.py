@@ -15,6 +15,7 @@ from translator.config import PROMPT_TEMPLATE_PATH
 from translator.bot import translate_html  # use the actual translate function
 from translator.services.anthropic_client import get_anthropic_client
 from translator.utils.utils_async import run_with_retries
+from translator.utils.prompt_validation import validate_prompt
 
 admin_prompt_bp = Blueprint("admin_prompt_bp", __name__)
 
@@ -35,20 +36,12 @@ def modify_prompt():
 @login_required
 def save_prompt():
     new_prompt = request.form.get("prompt_text", "")
-    if not new_prompt.strip():
-        return jsonify(error="No prompt provided"), 400
     # The long-message path does PROMPT_TEMPLATE.format(message_text=...), so the
     # template MUST contain {message_text} and must not contain other/stray braces
     # that would break .format(). Validate before overwriting the live template.
-    if "{message_text}" not in new_prompt:
-        return jsonify(error="Template must contain the {message_text} placeholder."), 400
-    try:
-        new_prompt.format(message_text="sample")
-    except (KeyError, IndexError, ValueError) as e:
-        return jsonify(
-            error=f"Template has invalid placeholders ({e}). "
-                  "Escape literal braces as {{ and }}."
-        ), 400
+    err = validate_prompt(new_prompt)
+    if err:
+        return jsonify(error=err), 400
 
     # Keep a one-step rollback of the previous template.
     if PROMPT_TEMPLATE_PATH.exists():

@@ -3,9 +3,11 @@
 Motivation: the retired-model outage sat broken for weeks because failures only
 landed in a log file nobody watched. This pushes critical failures to a chat.
 
-Enable by setting ``ADMIN_ALERT_CHAT_ID`` (a chat/user id the bot can message).
-When unset, alerts are no-ops (logged only), so this is safe to call anywhere.
-Alerts are throttled per signature to avoid floods when every message fails.
+Enable by setting ``ADMIN_ALERT_CHAT_ID`` — or, failing that, ``ADMIN_CHAT_ID``
+(the same admin who controls the bot via DM) — to a chat/user id the bot can
+message. When neither is set, alerts are no-ops (logged only), so this is safe
+to call anywhere. Alerts are throttled per signature to avoid floods when every
+message fails.
 """
 
 from __future__ import annotations
@@ -21,7 +23,6 @@ from translator.config import BOT_TOKEN
 
 logger = logging.getLogger("ALERT")
 
-ALERT_CHAT_ID = os.getenv("ADMIN_ALERT_CHAT_ID", "")
 # Minimum seconds between alerts sharing the same signature.
 _MIN_INTERVAL = float(os.getenv("ALERT_MIN_INTERVAL", "300"))
 _last_sent: Dict[str, float] = {}
@@ -40,15 +41,19 @@ async def send_alert(text: str, key: Optional[str] = None) -> bool:
         return False
     _last_sent[sig] = now
 
-    if not ALERT_CHAT_ID or not BOT_TOKEN:
-        logger.warning("Alert (undelivered; set ADMIN_ALERT_CHAT_ID): %s", text)
+    # Read live so a /reload-added ADMIN_CHAT_ID is honored without a restart.
+    chat_id = os.getenv("ADMIN_ALERT_CHAT_ID") or os.getenv("ADMIN_CHAT_ID", "")
+    if not chat_id or not BOT_TOKEN:
+        logger.warning(
+            "Alert (undelivered; set ADMIN_ALERT_CHAT_ID or ADMIN_CHAT_ID): %s", text
+        )
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(
-                url, json={"chat_id": ALERT_CHAT_ID, "text": text[:4000]}
+                url, json={"chat_id": chat_id, "text": text[:4000]}
             )
         if r.status_code != 200:
             logger.error("Alert delivery failed (%s): %s", r.status_code, r.text)
