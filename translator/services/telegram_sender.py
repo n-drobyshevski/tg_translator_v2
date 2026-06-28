@@ -16,22 +16,46 @@ load_dotenv()
 # Default timeout for all Bot API calls.
 _HTTP_TIMEOUT = 10
 
-# Control the link preview on relayed/edited text posts. build_payload appends a
-# "Source channel:" link, which otherwise renders an unwanted preview card; the
-# default disables previews. Set DISABLE_LINK_PREVIEW=0 to restore them. This is
-# also the modern replacement for the deprecated disable_web_page_preview flag.
-DISABLE_LINK_PREVIEW = os.getenv("DISABLE_LINK_PREVIEW", "1").lower() not in (
-    "0",
-    "false",
-    "no",
-)
-_LINK_PREVIEW_OPTIONS = {"is_disabled": True}
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a boolean env var; blank/unset falls back to ``default``."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "")
+
+
+# Link preview ("message filling") control for relayed/edited text posts.
+# build_payload appends a "Source channel:" link, so an enabled preview renders
+# that card. Previews are ON by default; set DISABLE_LINK_PREVIEW=1 to turn them
+# off. This is the modern replacement for the deprecated disable_web_page_preview
+# flag (Bot API 7.0+).
+DISABLE_LINK_PREVIEW = _env_flag("DISABLE_LINK_PREVIEW", False)
+
+
+def build_link_preview_options() -> dict:
+    """Build the LinkPreviewOptions object sent with text messages and edits.
+
+    Disabled → ``{"is_disabled": True}``. Enabled → modern rich options
+    (large media + optional positioning / pinned URL), all env-overridable:
+    ``LINK_PREVIEW_PREFER_LARGE_MEDIA`` (default on), ``LINK_PREVIEW_SHOW_ABOVE_TEXT``
+    (default off) and ``LINK_PREVIEW_URL`` (default: let Telegram pick the first link).
+    """
+    if DISABLE_LINK_PREVIEW:
+        return {"is_disabled": True}
+    options = {
+        "prefer_large_media": _env_flag("LINK_PREVIEW_PREFER_LARGE_MEDIA", True),
+        "show_above_text": _env_flag("LINK_PREVIEW_SHOW_ABOVE_TEXT", False),
+    }
+    pinned_url = os.getenv("LINK_PREVIEW_URL")
+    if pinned_url:
+        options["url"] = pinned_url
+    return options
+
 
 # Shared regexes (compiled once instead of re-importing/re-compiling per call).
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 # Zero-width / BOM characters that aren't matched by \s but should be dropped.
-_ZERO_WIDTH_RE = re.compile("[​-‍⁠﻿]")
 _ZERO_WIDTH_RE = re.compile("[​-‍⁠﻿]")
 
 def sanitize_html(text: str) -> str:
@@ -252,9 +276,8 @@ class TelegramSender:
                 "text": sanitized_chunk,
                 "parse_mode": "HTML",
             }
-            # JSON body -> link_preview_options can be a nested object directly.
-            if DISABLE_LINK_PREVIEW:
-                body["link_preview_options"] = _LINK_PREVIEW_OPTIONS
+            # JSON body -> link_preview_options is a nested object directly.
+            body["link_preview_options"] = build_link_preview_options()
             success, r, err = await self._post_telegram(url, json=body)
             exception_message = None
             if not success or r is None:
@@ -293,37 +316,47 @@ class TelegramSender:
 
         return True
 
-    async def send_photo_message(
-        self, photo: str, caption: str, recorder: EventRecorder
+    async def _send_media_message(
+        self,
+        endpoint: str,
+        media_field: str,
+        media_value: str,
+        caption: str,
+        recorder: EventRecorder,
     ):
+        """Send a media message (photo/video/document) via the Bot API.
+
+        The pyrogram listener runs as a *bot* session, so the source ``file_id``
+        is valid for the Bot API and can be re-sent directly. Captions support
+        HTML; link previews don't apply to media.
+        """
         target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
         cfg, err = get_channel_config(target)
         if not cfg:
-            return False, None, None, err
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+            return False
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/{endpoint}"
         sanitized_caption = sanitize_html(caption)
 
         sent_msg_id, posting_success = None, False
 
-        logging.info("Sending photo to %s (chat_id %s)…", target, cfg.channel_id)
-        success, r, err = await self._post_telegram(
-            url,
-            data={
-                "chat_id": dest_channel_id,
-                "photo": photo,
-                "caption": sanitized_caption,
-                "parse_mode": "HTML",
-            },
-        )
+        logging.info("Sending %s to %s (chat_id %s)…", media_field, target, cfg.channel_id)
+        data = {
+            "chat_id": dest_channel_id,
+            media_field: media_value,
+            "parse_mode": "HTML",
+        }
+        if sanitized_caption:
+            data["caption"] = sanitized_caption
+        success, r, err = await self._post_telegram(url, data=data)
         if not success or r is None:
-            logging.error("Failed to send photo to %s: %s", dest_channel_id, err)
+            logging.error("Failed to send %s to %s: %s", media_field, dest_channel_id, err)
             recorder.set(
                 dest_message_id=sent_msg_id,
                 posting_success=posting_success,
                 api_error_code=r.status_code if r else None,
-                exception_message=err
+                exception_message=err,
             )
-            return False 
+            return False
 
         result = r.json().get("result", {})
         sent_msg_id = result.get("message_id")
@@ -333,10 +366,31 @@ class TelegramSender:
             dest_message_id=sent_msg_id,
             posting_success=posting_success,
             api_error_code=None,
-            exception_message=None
+            exception_message=None,
         )
-        logging.info("Successfully sent photo to %s", target)
+        logging.info("Successfully sent %s to %s", media_field, target)
         return True
+
+    async def send_photo_message(
+        self, photo: str, caption: str, recorder: EventRecorder
+    ):
+        return await self._send_media_message(
+            "sendPhoto", "photo", photo, caption, recorder
+        )
+
+    async def send_video_message(
+        self, video: str, caption: str, recorder: EventRecorder
+    ):
+        return await self._send_media_message(
+            "sendVideo", "video", video, caption, recorder
+        )
+
+    async def send_document_message(
+        self, document: str, caption: str, recorder: EventRecorder
+    ):
+        return await self._send_media_message(
+            "sendDocument", "document", document, caption, recorder
+        )
 
     async def edit_message(self, channel_id, message_id, text, recorder: EventRecorder, original_text: Optional[str] = None):
         """
@@ -415,8 +469,7 @@ class TelegramSender:
             "parse_mode": "HTML",
         }
         # Form-encoded body -> link_preview_options must be a JSON-encoded string.
-        if DISABLE_LINK_PREVIEW:
-            payload["link_preview_options"] = json.dumps(_LINK_PREVIEW_OPTIONS)
+        payload["link_preview_options"] = json.dumps(build_link_preview_options())
         posting_success = False
         api_error_code = None
         exception_message = None
@@ -456,6 +509,87 @@ class TelegramSender:
             posting_success = True
             logging.info(
                 "Edit message: Successfully edited message %s in %s",
+                message_id,
+                channel_id,
+            )
+
+        recorder.set(
+            dest_message_id=sent_msg_id,
+            posting_success=posting_success,
+            api_error_code=api_error_code,
+            exception_message=exception_message,
+        )
+        return posting_success
+
+    async def edit_caption(
+        self,
+        channel_id,
+        message_id,
+        caption,
+        recorder: EventRecorder,
+        original_text: Optional[str] = None,
+    ):
+        """Edit the caption of a relayed media message via editMessageCaption.
+
+        Mirrors ``edit_message`` (unchanged-content skip + "not modified"
+        tolerance) but targets media posts, where ``editMessageText`` is invalid.
+        Link previews don't apply to captions.
+        """
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageCaption"
+        sanitized_caption = sanitize_html(caption)
+
+        if original_text is not None and advanced_content_comparison(original_text, caption):
+            logging.info(
+                "Edit caption: Content unchanged for message %s in %s - skipping edit",
+                message_id,
+                channel_id,
+            )
+            recorder.set(
+                dest_message_id=message_id,
+                posting_success=True,
+                api_error_code=None,
+                exception_message="Content unchanged - edit skipped",
+            )
+            return True
+
+        payload = {
+            "chat_id": channel_id,
+            "message_id": message_id,
+            "caption": sanitized_caption,
+            "parse_mode": "HTML",
+        }
+        posting_success = False
+        api_error_code = None
+        exception_message = None
+        sent_msg_id = None
+
+        success, resp, err = await self._post_telegram(url, data=payload)
+
+        if not success or resp is None:
+            if err and "message is not modified" in str(err).lower():
+                logging.warning(
+                    "Edit caption: Message %s in %s is unchanged - treating as successful",
+                    message_id,
+                    channel_id,
+                )
+                posting_success = True
+                sent_msg_id = message_id
+                exception_message = "Message content unchanged"
+            else:
+                logging.error(
+                    "Edit caption: Failed to edit message %s in %s: %s",
+                    message_id,
+                    channel_id,
+                    err,
+                )
+                api_error_code = resp.status_code if resp else None
+                exception_message = err
+        else:
+            result = resp.json().get("result", {})
+            sent_msg_id = result.get("message_id")
+            posting_success = True
+            logging.info(
+                "Edit caption: Successfully edited message %s in %s",
                 message_id,
                 channel_id,
             )

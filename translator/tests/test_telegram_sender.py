@@ -1,6 +1,10 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from translator.services.telegram_sender import TelegramSender
+from translator.services import telegram_sender as ts_module
+from translator.services.telegram_sender import (
+    TelegramSender,
+    build_link_preview_options,
+)
 from translator.models import ChannelConfig
 from translator.services.event_logger import EventRecorder
 
@@ -80,3 +84,120 @@ async def test_send_message_success(mock_post):
     recorder.set(dest_channel_name="test", dest_channel_id=TEST_CHANNEL_ID)
     success = await sender.send_message("text", recorder)
     assert success
+
+
+# --- Link preview ("message filling") options -------------------------------
+
+
+def test_link_preview_enabled_by_default(monkeypatch):
+    monkeypatch.setattr(ts_module, "DISABLE_LINK_PREVIEW", False)
+    monkeypatch.delenv("LINK_PREVIEW_PREFER_LARGE_MEDIA", raising=False)
+    monkeypatch.delenv("LINK_PREVIEW_SHOW_ABOVE_TEXT", raising=False)
+    monkeypatch.delenv("LINK_PREVIEW_URL", raising=False)
+    opts = build_link_preview_options()
+    assert opts == {"prefer_large_media": True, "show_above_text": False}
+
+
+def test_link_preview_disabled_override(monkeypatch):
+    monkeypatch.setattr(ts_module, "DISABLE_LINK_PREVIEW", True)
+    assert build_link_preview_options() == {"is_disabled": True}
+
+
+def test_link_preview_pinned_url(monkeypatch):
+    monkeypatch.setattr(ts_module, "DISABLE_LINK_PREVIEW", False)
+    monkeypatch.setenv("LINK_PREVIEW_URL", "https://t.me/example")
+    assert build_link_preview_options()["url"] == "https://t.me/example"
+
+
+@pytest.mark.asyncio
+@patch(
+    "translator.config.CHANNEL_CONFIGS",
+    {"test": ChannelConfig(channel_id=TEST_CHANNEL_ID, bot_token=TEST_BOT_TOKEN)},
+)
+@patch("httpx.AsyncClient.post")
+async def test_send_message_includes_link_preview_options(mock_post, monkeypatch):
+    monkeypatch.setattr(ts_module, "DISABLE_LINK_PREVIEW", False)
+    mock_post.return_value = MagicMock(status_code=200)
+    mock_post.return_value.json.return_value = {"ok": True, "result": {"message_id": 1}}
+    sender = TelegramSender()
+    recorder = EventRecorder()
+    recorder.set(dest_channel_name="test", dest_channel_id=TEST_CHANNEL_ID)
+    await sender.send_message("text", recorder)
+    body = mock_post.call_args.kwargs["json"]
+    assert "link_preview_options" in body
+    assert body["link_preview_options"]["prefer_large_media"] is True
+
+
+# --- Media relay (photo/video/document) -------------------------------------
+
+
+@pytest.mark.asyncio
+@patch(
+    "translator.services.telegram_sender.CHANNEL_CONFIGS",
+    {"test": ChannelConfig(channel_id=TEST_CHANNEL_ID, bot_token=TEST_BOT_TOKEN)},
+)
+@patch("httpx.AsyncClient.post")
+async def test_send_video_message_success(mock_post):
+    mock_post.return_value = MagicMock(status_code=200)
+    mock_post.return_value.json.return_value = {"ok": True, "result": {"message_id": 9}}
+    sender = TelegramSender()
+    recorder = EventRecorder()
+    recorder.set(dest_channel_name="test", dest_channel_id=TEST_CHANNEL_ID)
+    success = await sender.send_video_message("file_id_1", "caption", recorder)
+    assert success
+    sent = mock_post.call_args
+    assert sent.args[0].endswith("/sendVideo")
+    assert sent.kwargs["data"]["video"] == "file_id_1"
+    assert sent.kwargs["data"]["caption"] == "caption"
+    assert sent.kwargs["data"]["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+@patch(
+    "translator.services.telegram_sender.CHANNEL_CONFIGS",
+    {"test": ChannelConfig(channel_id=TEST_CHANNEL_ID, bot_token=TEST_BOT_TOKEN)},
+)
+@patch("httpx.AsyncClient.post")
+async def test_send_document_message_success(mock_post):
+    mock_post.return_value = MagicMock(status_code=200)
+    mock_post.return_value.json.return_value = {"ok": True, "result": {"message_id": 10}}
+    sender = TelegramSender()
+    recorder = EventRecorder()
+    recorder.set(dest_channel_name="test", dest_channel_id=TEST_CHANNEL_ID)
+    success = await sender.send_document_message("file_id_2", "", recorder)
+    assert success
+    sent = mock_post.call_args
+    assert sent.args[0].endswith("/sendDocument")
+    assert sent.kwargs["data"]["document"] == "file_id_2"
+    # Empty caption is omitted entirely.
+    assert "caption" not in sent.kwargs["data"]
+
+
+# --- Caption edits ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.post")
+async def test_edit_caption_success(mock_post):
+    mock_post.return_value = MagicMock(status_code=200)
+    mock_post.return_value.json.return_value = {"ok": True, "result": {"message_id": 5}}
+    sender = TelegramSender()
+    recorder = EventRecorder()
+    success = await sender.edit_caption(TEST_CHANNEL_ID, 5, "new caption", recorder)
+    assert success
+    sent = mock_post.call_args
+    assert sent.args[0].endswith("/editMessageCaption")
+    assert sent.kwargs["data"]["caption"] == "new caption"
+    assert sent.kwargs["data"]["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.post")
+async def test_edit_caption_unchanged_skips_api(mock_post):
+    sender = TelegramSender()
+    recorder = EventRecorder()
+    success = await sender.edit_caption(
+        TEST_CHANNEL_ID, 5, "same", recorder, original_text="same"
+    )
+    assert success
+    mock_post.assert_not_called()

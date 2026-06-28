@@ -6,7 +6,7 @@ tone, hashtags, emojis and paragraph breaks. Do not paraphrase or summarise.
 <user>
 <instructions>
 Translate the Telegram post below from Russian to English **literally**,
-paragraph‑by‑paragraph, following all nine rules:
+paragraph‑by‑paragraph, following all the rules below:
 
 When you see a hyperlink in the form <a href='URL'>TEXT</a>, you must translate only the TEXT between the tags, but you must always preserve the URL (the link) exactly as in the original. Do not change, remove, or paraphrase any links.
 
@@ -22,6 +22,11 @@ When you see a hyperlink in the form <a href='URL'>TEXT</a>, you must translate 
 8. **Hashtags** (e.g. #Минск, #news) must appear unchanged in the translation.
 9. Keep all other URLs unchanged and preserve any punctuation or emoji.
 10. Preserve the original content at maximum, retaining any repeating parts.
+11. **Formatting tags** – preserve any inline formatting exactly as in the
+    source: <b>…</b>, <i>…</i>, <u>…</u>, <s>…</s>, <code>…</code>,
+    <tg-spoiler>…</tg-spoiler>, <blockquote>…</blockquote> and
+    <blockquote expandable>…</blockquote>. Translate only the text inside the
+    tags; never add, drop, rename, or reorder a formatting tag.
 </instructions>
 
 <example>

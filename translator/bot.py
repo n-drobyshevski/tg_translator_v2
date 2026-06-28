@@ -111,6 +111,20 @@ except OSError as e:
     )
 
 
+def _edit_target_mismatch(recorder: EventRecorder) -> bool:
+    """True if the last edit failed because text/caption method was mismatched.
+
+    editMessageText on a media post → "there is no text in the message to edit";
+    editMessageCaption on a text post → "there is no caption in the message to
+    edit". Either means we should retry with the other method.
+    """
+    msg = str(recorder.get("exception_message") or "").lower()
+    return (
+        "no text in the message to edit" in msg
+        or "no caption in the message to edit" in msg
+    )
+
+
 ###############################################################################
 # PTB‑worker (метаданные вложений)
 ###############################################################################
@@ -260,17 +274,30 @@ def register_handlers(
                 translation_time=translation_time,
                 retry_count=retry_count,
             )
-            if (
-                media_type == "photo"
-                and meta.get("file_download_link")
-                and len(translated) < 1024
-            ):
-                pyro_log.info(
-                    "Detected photo message; ready to process photo with file download link."
-                )
-                await run_with_retries(
-                    sender.send_photo_message, file_id, translated, recorder
-                )
+            media_dispatch = {
+                "photo": sender.send_photo_message,
+                "video": sender.send_video_message,
+                "doc": sender.send_document_message,
+            }
+            send_media = media_dispatch.get(media_type)
+            if send_media and meta.get("file_download_link"):
+                if len(translated) < 1024:
+                    pyro_log.info(
+                        "Detected %s message; re-sending media with translated caption.",
+                        media_type,
+                    )
+                    await run_with_retries(send_media, file_id, translated, recorder)
+                else:
+                    # Caption exceeds Telegram's 1024-char media limit: post the
+                    # media (no caption) then the full translation as a separate
+                    # text message so the media isn't dropped.
+                    pyro_log.info(
+                        "Caption too long for %s media (%d chars); sending media + follow-up text.",
+                        media_type,
+                        len(translated),
+                    )
+                    await run_with_retries(send_media, file_id, "", recorder)
+                    await run_with_retries(sender.send_message, translated, recorder)
             else:
                 await run_with_retries(sender.send_message, translated, recorder)
             pyro_log.info(
@@ -388,10 +415,33 @@ def register_handlers(
             translated = await run_with_retries(translate_html, anthropic, payload)
             pyro_log.info("Translated.")
 
-            # Now edit the message in the dest channel
-            await run_with_retries(
-                sender.edit_message, dest_channel_id, dest_id, translated, recorder
+            # Route the edit by how the post was originally delivered: media
+            # posts (photo/video/doc whose caption fits) were sent with a
+            # caption and must be edited via editMessageCaption; everything else
+            # via editMessageText. Recompute the same decision used on send, and
+            # self-heal by retrying the other method if Telegram reports the
+            # target had no text/caption.
+            is_media_delivery = (
+                media_type in ("photo", "video", "doc")
+                and meta.get("file_download_link")
+                and len(translated) < 1024
             )
+            if is_media_delivery:
+                ok = await run_with_retries(
+                    sender.edit_caption, dest_channel_id, dest_id, translated, recorder
+                )
+                if not ok and _edit_target_mismatch(recorder):
+                    await run_with_retries(
+                        sender.edit_message, dest_channel_id, dest_id, translated, recorder
+                    )
+            else:
+                ok = await run_with_retries(
+                    sender.edit_message, dest_channel_id, dest_id, translated, recorder
+                )
+                if not ok and _edit_target_mismatch(recorder):
+                    await run_with_retries(
+                        sender.edit_caption, dest_channel_id, dest_id, translated, recorder
+                    )
             pyro_log.info(
                 "EDIT DONE chat:%s msg:%s → destination msg: %s",
                 msg.chat.title,
