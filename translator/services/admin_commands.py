@@ -73,7 +73,6 @@ HELP_TEXT = (
     "/help — this message\n"
     "/status — uptime, channels, queue depth\n"
     "/stats [days] — relay counts &amp; failures (default 7)\n"
-    "/config — current (non-secret) settings\n"
     "/channels — configured channel pairs\n"
     "/prompt — current prompt template\n"
     "/setmodel &lt;model&gt;\n"
@@ -145,16 +144,20 @@ def _cmd_stats(args: List[str]) -> str:
     return "\n".join(lines)
 
 
-def _cmd_config() -> str:
+def _config_summary() -> str:
+    """Current non-secret settings as value lines (no header).
+
+    Rendered inside the Settings menu (see :mod:`translator.services.admin_menu`),
+    which supplies its own ``⚙️ Settings`` title. Labels mirror the submenu wording.
+    """
     d = CONFIG.as_dict()
     lines = [
-        "<b>Config</b> (secrets hidden)",
-        f"ANTHROPIC_MODEL: {html.escape(str(d['ANTHROPIC_MODEL']))}",
-        f"ANTHROPIC_TEMPERATURE: {d['ANTHROPIC_TEMPERATURE']}",
-        f"ANTHROPIC_MAX_TOKENS: {d['ANTHROPIC_MAX_TOKENS']}",
-        f"LOG_LEVEL: {html.escape(str(d['LOG_LEVEL']))}",
-        f"ADMIN_CHAT_IDS: {d['ADMIN_CHAT_IDS']}",
-        f"LOGICAL_CHANNELS: {html.escape(', '.join(d['LOGICAL_CHANNELS']))}",
+        f"Model: {html.escape(str(d['ANTHROPIC_MODEL']))}",
+        f"Temperature: {d['ANTHROPIC_TEMPERATURE']}",
+        f"Max Tokens: {d['ANTHROPIC_MAX_TOKENS']}",
+        f"Log Level: {html.escape(str(d['LOG_LEVEL']))}",
+        f"Admin IDs: {d['ADMIN_CHAT_IDS']}",
+        f"Channels: {html.escape(', '.join(d['LOGICAL_CHANNELS']))}",
     ]
     return "\n".join(lines)
 
@@ -382,8 +385,6 @@ async def handle_command(
         return _cmd_status(start_ts, query_queue, pyro)
     if cmd == "/stats":
         return _cmd_stats(args)
-    if cmd == "/config":
-        return _cmd_config()
     if cmd == "/channels":
         return _cmd_channels()
     if cmd == "/prompt":

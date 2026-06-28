@@ -134,6 +134,12 @@ async def test_unknown_command(admin_env):
     assert "Unknown" in out
 
 
+async def test_config_command_removed(admin_env):
+    # /config was merged into the Settings menu; it's no longer a command.
+    out = await admin_commands.handle_command(Msg("/config"))
+    assert "Unknown" in out
+
+
 async def test_stats_uses_events_dao(admin_env, monkeypatch):
     from translator.db import events_dao
 

@@ -45,6 +45,21 @@ def test_resolve_button_label_unknown_is_none():
     assert admin_menu.resolve_button_label("") is None
 
 
+def test_config_button_merged_into_settings():
+    # The standalone Config button is gone; Settings is the merged hub.
+    assert admin_menu.resolve_button_label("⚙️ Config") is None
+    labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
+    assert "⚙️ Config" not in labels
+    assert "🛠️ Settings" in labels
+
+
+def test_settings_menu_shows_current_values(admin_env):
+    res = admin_menu.handle_callback("nav:settings")
+    assert "Model:" in res.text
+    assert CONFIG.ANTHROPIC_MODEL in res.text
+    assert "Pick a setting to change." in res.text
+
+
 def test_nav_settings_returns_settings_rows(admin_env):
     res = admin_menu.handle_callback("nav:settings")
     assert res.rows is not None

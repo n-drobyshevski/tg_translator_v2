@@ -42,7 +42,6 @@ Rows = List[Row]
 BUTTON_COMMANDS = {
     "📊 Status": "/status",
     "📈 Stats": "/stats",
-    "⚙️ Config": "/config",
     "📡 Channels": "/channels",
     "📝 Prompt": "/prompt",
     "🔄 Reload": "/reload",
@@ -52,7 +51,7 @@ BUTTON_COMMANDS = {
 
 MENU_GREETING = (
     "<b>📋 Relay bot menu</b>\n"
-    "Tap a button below, or open 🛠️ Settings to change configuration.\n"
+    "Tap a button below, or open 🛠️ Settings to view and change configuration.\n"
     "Typed commands still work — tap ❓ Help to see them."
 )
 
@@ -68,9 +67,9 @@ def build_reply_keyboard() -> List[List[str]]:
     """Spec for the persistent reply keyboard (rows of plain labels)."""
     return [
         ["📊 Status", "📈 Stats"],
-        ["⚙️ Config", "📡 Channels"],
-        ["📝 Prompt", "🛠️ Settings"],
+        ["📡 Channels", "📝 Prompt"],
         ["🔄 Reload", "❓ Help"],
+        ["🛠️ Settings"],
     ]
 
 
@@ -97,7 +96,11 @@ class CallbackResult:
 
 
 def _settings_menu() -> Tuple[str, Rows]:
-    title = "<b>⚙️ Settings</b>\nPick a setting to change."
+    title = (
+        "<b>⚙️ Settings</b>\n\n"
+        f"{admin_commands._config_summary()}\n\n"
+        "Pick a setting to change."
+    )
     rows: Rows = [
         [("🤖 Set Model", "nav:model")],
         [("🌡️ Temperature", "nav:temp"), ("🔢 Max Tokens", "nav:tokens")],
