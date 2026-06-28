@@ -136,7 +136,15 @@ def test_rmchok_removes_channel(admin_env):
 def test_admins_button_on_reply_keyboard():
     labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
     assert "👤 Admins" in labels
-    assert admin_menu.resolve_button_label("👤 Admins") == "/admins"
+    # The reply-keyboard button opens the inline Admins menu (not the text list).
+    assert admin_menu.resolve_button_label("👤 Admins") == "/adminsmenu"
+
+
+def test_admins_entry_returns_button_menu(admin_env):
+    title, rows = admin_menu.admins_entry()
+    data = _flat_data(rows)
+    assert "admin:add" in data
+    assert "rmadmin:111" in data
 
 
 def test_settings_has_admins_entry(admin_env):

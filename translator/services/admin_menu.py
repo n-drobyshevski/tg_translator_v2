@@ -44,7 +44,9 @@ BUTTON_COMMANDS = {
     "📊 Status": "/status",
     "📈 Stats": "/stats",
     "📡 Channels": "/channels",
-    "👤 Admins": "/admins",
+    # Opens the inline Admins menu (add/remove buttons), not the text list — this
+    # menu-bearing pseudo-command is intercepted in admin_commands._dispatch.
+    "👤 Admins": "/adminsmenu",
     "📝 Prompt": "/prompt",
     "🔄 Reload": "/reload",
     "❓ Help": "/help",
@@ -252,6 +254,11 @@ def build_menu(menu_id: str) -> Tuple[str, Rows]:
 def settings_entry() -> Tuple[str, Rows]:
     """Title + rows for the top-level Settings menu (used by the DM wrapper)."""
     return _settings_menu()
+
+
+def admins_entry() -> Tuple[str, Rows]:
+    """Title + rows for the Admins menu (used by the DM wrapper / reply button)."""
+    return _admins_menu()
 
 
 def _fallback() -> CallbackResult:
