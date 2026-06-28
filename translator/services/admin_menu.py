@@ -90,12 +90,13 @@ def build_reply_keyboard(lang: str = "en") -> List[List[str]]:
     """Spec for the persistent reply keyboard (rows of plain labels).
 
     🤖 AI Settings is a top-level entry (its own inline menu via /aimenu); the
-    prompt template lives inside it (🤖 AI Settings → 📝 Prompt).
+    prompt template lives inside it (🤖 AI Settings → 📝 Prompt). 📡 Channels and
+    👤 Admins are not top-level either — they now live under 🛠️ Settings (their
+    labels stay resolvable via BUTTON_KEYS for typed/cached access).
     """
     return [
         [t("btn_status", lang), t("btn_stats", lang)],
-        [t("btn_ai", lang), t("btn_channels", lang)],
-        [t("btn_admins", lang), t("btn_reload", lang)],
+        [t("btn_ai", lang), t("btn_reload", lang)],
         [t("btn_help", lang), t("btn_settings", lang)],
     ]
 
@@ -136,6 +137,7 @@ def _settings_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = t("settings_title", lang, summary=admin_commands._config_summary(lang))
     rows: Rows = [
         [(t("settings_btn_log", lang), "nav:log")],
+        [(t("btn_channels", lang), "nav:channels")],
         [(t("settings_btn_rmch", lang), "nav:rmch")],
         [(t("btn_admins", lang), "nav:admins")],
         [(t("btn_language", lang), "nav:lang")],

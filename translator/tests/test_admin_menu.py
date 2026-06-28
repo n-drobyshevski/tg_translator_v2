@@ -200,11 +200,24 @@ def test_rmchok_removes_channel(admin_env):
     assert "shaltnotkill" not in admin_menu.admin_commands._logical_names()
 
 
-def test_admins_button_on_reply_keyboard():
+def test_admins_removed_from_reply_keyboard():
+    # Admins moved under Settings; gone from the top-level keyboard but still
+    # resolvable for back-compat (typed flows / cached keyboards).
     labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
-    assert "👤 Admins" in labels
-    # The reply-keyboard button opens the inline Admins menu (not the text list).
-    assert admin_menu.resolve_button_label("👤 Admins") == "/adminsmenu"
+    assert admin_i18n.t("btn_admins") not in labels
+    assert admin_menu.resolve_button_label(admin_i18n.t("btn_admins")) == "/adminsmenu"
+
+
+def test_channels_removed_from_reply_keyboard():
+    # Channels moved under Settings; same back-compat contract as Admins.
+    labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
+    assert admin_i18n.t("btn_channels") not in labels
+    assert admin_menu.resolve_button_label(admin_i18n.t("btn_channels")) == "/channelsmenu"
+
+
+def test_settings_has_channels_entry(admin_env):
+    res = admin_menu.handle_callback("nav:settings")
+    assert "nav:channels" in _flat_data(res.rows)
 
 
 def test_admins_entry_returns_button_menu(admin_env):
