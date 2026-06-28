@@ -65,8 +65,12 @@ async def translate_html(
     * a synchronous ``Anthropic`` (the Flask path, which can't share an async
       client across its per-request loops) is run via ``asyncio.to_thread``.
 
-    The two are told apart by whether ``messages.create`` is a coroutine
-    function, so test doubles work without subclassing the SDK.
+    The real SDK clients are told apart by client type (``isinstance``):
+    ``AsyncAnthropic.messages.create`` is wrapped by the SDK's ``@required_args``
+    decorator into a *synchronous* function returning a coroutine, so
+    ``inspect.iscoroutinefunction`` would wrongly report it as sync. The
+    coroutine-function check is kept as a fallback so non-SDK async test doubles
+    (a bare ``async def create``) still work without subclassing the SDK.
 
     Model and params come from ``CONFIG`` so they can be changed via env vars
     without touching code (e.g. when a model is deprecated).
@@ -96,7 +100,7 @@ async def translate_html(
         ],
         messages=[{"role": "user", "content": user_text}],
     )
-    if inspect.iscoroutinefunction(create):
+    if isinstance(client, AsyncAnthropic) or inspect.iscoroutinefunction(create):
         resp = await create(**kwargs)
     else:
         resp = await asyncio.to_thread(create, **kwargs)

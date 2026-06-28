@@ -1,3 +1,4 @@
+import inspect
 import pytest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -67,6 +68,37 @@ async def test_translate_html_awaits_async_client():
     result = await translate_html(FakeAsyncClient, payload)
     assert result == "async translated!"
     assert captured["messages"][0]["role"] == "user"
+    assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_translate_html_awaits_decorated_async_sdk_client(monkeypatch):
+    # Reproduces the real SDK: AsyncAnthropic.messages.create is wrapped by
+    # @required_args into a *sync* function returning a coroutine, so
+    # inspect.iscoroutinefunction(create) is False. The dispatch must still await it
+    # (regression test for the bot posting nothing because resp was an unawaited
+    # coroutine -> "'coroutine' object has no attribute 'content'").
+    from anthropic import AsyncAnthropic
+
+    client = AsyncAnthropic(api_key="test-key")
+    captured = {}
+
+    async def _impl(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            stop_reason="end_turn",
+            content=[SimpleNamespace(text="async translated!")],
+        )
+
+    def sync_wrapper(**kwargs):  # mimics @required_args: sync def, returns coroutine
+        return _impl(**kwargs)
+
+    assert not inspect.iscoroutinefunction(sync_wrapper)  # the exact trap
+    monkeypatch.setattr(client.messages, "create", sync_wrapper)
+
+    payload = {"Html": "hi", "Channel": "x", "Link": "y"}
+    result = await translate_html(client, payload)
+    assert result == "async translated!"
     assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
