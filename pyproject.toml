@@ -2,10 +2,26 @@
 name = "tg-translator"
 version = "0.1.0"
 description = "Telegram channel message translator"
+requires-python = ">=3.10"
 dependencies = [
-    "python-telegram-bot",
-    "telethon",
-    "anthropic",
+    # Kurigram is the maintained drop-in replacement for the abandoned Pyrogram
+    # (still imported as `pyrogram`). The code uses Pyrogram, never Telethon.
+    "kurigram==2.2.23",
+    "python-telegram-bot[rate-limiter]==22.8",
+    "anthropic==0.112.0",
+    "httpx==0.28.1",
+    "requests==2.34.2",
+    "python-dotenv==1.2.2",
+    "bleach==6.4.0",
+    "flask==3.1.3",
+    "flask-login==0.6.3",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest==8.4.2",
+    "pytest-asyncio==1.2.0",
+    "pytest-cov==7.0.0",
 ]
 
 [build-system]

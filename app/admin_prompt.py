@@ -34,10 +34,28 @@ def modify_prompt():
 @login_required
 def save_prompt():
     new_prompt = request.form.get("prompt_text", "")
-    if not new_prompt:
+    if not new_prompt.strip():
         return jsonify(error="No prompt provided"), 400
+    # The long-message path does PROMPT_TEMPLATE.format(message_text=...), so the
+    # template MUST contain {message_text} and must not contain other/stray braces
+    # that would break .format(). Validate before overwriting the live template.
+    if "{message_text}" not in new_prompt:
+        return jsonify(error="Template must contain the {message_text} placeholder."), 400
+    try:
+        new_prompt.format(message_text="sample")
+    except (KeyError, IndexError, ValueError) as e:
+        return jsonify(
+            error=f"Template has invalid placeholders ({e}). "
+                  "Escape literal braces as {{ and }}."
+        ), 400
+
+    # Keep a one-step rollback of the previous template.
+    if PROMPT_TEMPLATE_PATH.exists():
+        backup = PROMPT_TEMPLATE_PATH.with_suffix(PROMPT_TEMPLATE_PATH.suffix + ".bak")
+        backup.write_text(PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
     PROMPT_TEMPLATE_PATH.write_text(new_prompt, encoding="utf-8")
-    return jsonify(message="Prompt template updated successfully.")
+    return jsonify(message="Prompt template updated successfully. (Restart the bot to apply.)")
 
 
 @admin_prompt_bp.route("/admin/get_last_telegram_post", methods=["POST"])

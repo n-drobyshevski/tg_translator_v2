@@ -87,44 +87,53 @@ def test_event_recorder_get_empty_fields():
     with pytest.raises(ValueError):
         recorder.get()
 
-@patch('os.path.dirname')
-@patch('json.dump')
-def test_event_recorder_finalize(mock_dump, mock_dirname, tmp_path):
-    """Test finalizing and saving event"""
-    mock_dirname.return_value = str(tmp_path)
-    
+def _use_temp_sqlite(tmp_path, monkeypatch):
+    """Point the event store at a throwaway SQLite DB on the default backend."""
+    from translator import config
+    from translator.db import connection
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "events.db"))
+    monkeypatch.setattr(config, "STORAGE_BACKEND", "sqlite")
+    monkeypatch.setattr(connection, "_initialized", False)
+
+
+def test_event_recorder_finalize(tmp_path, monkeypatch):
+    """finalize() writes exactly one row to the SQLite store (default backend)."""
+    _use_temp_sqlite(tmp_path, monkeypatch)
+    from translator.db import events_dao
+
     recorder = EventRecorder()
     recorder.set(
         timestamp="2025-07-05",
         event_type="create",
         source_channel_id="123",
-        dest_channel_id="456"
+        dest_channel_id="456",
+        message_id="1",
     )
-    
     recorder.finalize()
-    
-    # Verify json.dump was called
-    mock_dump.assert_called_once()
-    
-    # Verify stats were updated
-    assert len(recorder.stats["messages"]) == 1
-    assert recorder.stats["messages"][0]["event_type"] == "create"
 
-def test_event_recorder_finalize_auto_event_type():
-    """Test event_type is automatically set in finalize"""
+    rows = events_dao.load_messages()
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "create"
+
+
+def test_event_recorder_finalize_auto_event_type(tmp_path, monkeypatch):
+    """event_type is auto-derived as 'edit' when edit_timestamp is present."""
+    _use_temp_sqlite(tmp_path, monkeypatch)
+    from translator.db import events_dao
+
     recorder = EventRecorder()
     recorder.set(
         timestamp="2025-07-05",
-        event_type=None,  # Let it be auto-determined
-        edit_timestamp="2025-07-05",  # This should make it an edit event
+        # event_type left at its prefill default ("") so finalize derives it
+        edit_timestamp="2025-07-05",
         source_channel_id="123",
-        dest_channel_id="456"
+        dest_channel_id="456",
+        message_id="2",
     )
-    
-    with patch('builtins.open', mock_open()):
-        recorder.finalize()
-        
-    assert recorder.stats["messages"][-1]["event_type"] == "edit"
+    recorder.finalize()
+
+    rows = events_dao.load_messages()
+    assert rows[-1]["event_type"] == "edit"
 
 def test_get_channel_cache_success(mock_channel_cache):
     """Test successful channel cache retrieval"""

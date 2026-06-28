@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional, Tuple, Any
 
-import requests
+import httpx
 from dotenv import load_dotenv
 from translator.config import CHANNEL_CONFIGS, BOT_TOKEN
 from translator.services.event_logger import EventRecorder
@@ -9,7 +9,8 @@ from translator.services.event_logger import EventRecorder
 
 load_dotenv()
 
-_SESSION = requests.Session()
+# Default timeout for all Bot API calls.
+_HTTP_TIMEOUT = 10
 
 
 def sanitize_html(text: str) -> str:
@@ -243,20 +244,26 @@ class TelegramSender:
             # Note: Message storage functionality would go here
             # Currently disabled to avoid recursion issue
 
-    def _post_telegram(
+    async def _post_telegram(
         self, url: str, *, data: Optional[dict] = None, json: Optional[dict] = None
-    ) -> Tuple[bool, Optional[requests.Response], Optional[str]]:
+    ) -> Tuple[bool, Optional[httpx.Response], Optional[str]]:
         """
-        Send a POST request to the Telegram Bot API.
+        Send a POST request to the Telegram Bot API (non-blocking via httpx).
+
+        A fresh AsyncClient is created per call on purpose: this sender is used
+        both by the bot's persistent event loop and by Flask routes that spin up
+        a new loop per request (asyncio.run), and a shared client would bind to
+        one loop and fail in the other.
 
         Returns:
             (success, response, error_message)
             - success: True if status_code is 200, else False
-            - response: requests.Response object if available, else None
+            - response: httpx.Response object if available, else None
             - error_message: error description or exception string if failed, else None
         """
         try:
-            r = _SESSION.post(url, data=data, json=json, timeout=10)
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                r = await client.post(url, data=data, json=json)
             if r.status_code != 200:
                 desc = None
                 try:
@@ -282,7 +289,7 @@ class TelegramSender:
         for chunk in chunks:
             sanitized_chunk = sanitize_html(chunk)
             logging.info("Send message: Sending chunk to %s (chat_id %s)…", target, dest_channel_id)
-            success, r, err = self._post_telegram(
+            success, r, err = await self._post_telegram(
                 url,
                 json={
                     "chat_id": dest_channel_id,
@@ -340,7 +347,7 @@ class TelegramSender:
         sent_msg_id, posting_success = None, False
 
         logging.info("Sending photo to %s (chat_id %s)…", target, cfg.channel_id)
-        success, r, err = self._post_telegram(
+        success, r, err = await self._post_telegram(
             url,
             data={
                 "chat_id": dest_channel_id,
@@ -453,7 +460,7 @@ class TelegramSender:
         exception_message = None
         sent_msg_id = None
 
-        success, resp, err = self._post_telegram(url, data=payload)
+        success, resp, err = await self._post_telegram(url, data=payload)
         
         if not success or resp is None:
             # Handle specific "message is not modified" error

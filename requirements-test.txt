@@ -3,6 +3,6 @@
 -r requirements.txt
 
 # Test framework
-pytest
-pytest-asyncio   # required by pytest.ini (asyncio_mode = auto)
-pytest-cov       # required by test.bat (pytest --cov=translator)
+pytest==8.4.2
+pytest-asyncio==1.2.0   # required by pytest.ini (asyncio_mode = auto)
+pytest-cov==7.0.0       # required by test.bat (pytest --cov=translator)

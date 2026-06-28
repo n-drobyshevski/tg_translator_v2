@@ -25,8 +25,9 @@ def test_split_message_long():
 
 @pytest.mark.asyncio
 @patch("translator.config.CHANNEL_CONFIGS", {})
-@patch("requests.Session.post")
+@patch("httpx.AsyncClient.post")
 async def test_send_message_unknown_channel(mock_post):
+    mock_post.return_value = MagicMock(status_code=500)
     sender = TelegramSender()
     recorder = EventRecorder()
     recorder.set(dest_channel_name="notachannel")
@@ -39,8 +40,9 @@ async def test_send_message_unknown_channel(mock_post):
     "translator.config.CHANNEL_CONFIGS",
     {"test": ChannelConfig(channel_id=0, bot_token=TEST_BOT_TOKEN)},
 )
-@patch("requests.Session.post")
+@patch("httpx.AsyncClient.post")
 async def test_send_message_no_channel_id(mock_post):
+    mock_post.return_value = MagicMock(status_code=500)
     sender = TelegramSender()
     recorder = EventRecorder()
     recorder.set(dest_channel_name="test")
@@ -53,9 +55,9 @@ async def test_send_message_no_channel_id(mock_post):
     "translator.config.CHANNEL_CONFIGS",
     {"test": ChannelConfig(channel_id=TEST_CHANNEL_ID, bot_token=TEST_BOT_TOKEN)},
 )
-@patch("requests.Session.post")
+@patch("httpx.AsyncClient.post")
 async def test_send_message_api_error(mock_post):
-    mock_post.return_value.status_code = 400
+    mock_post.return_value = MagicMock(status_code=400)
     mock_post.return_value.json.return_value = {"description": "fail"}
     sender = TelegramSender()
     recorder = EventRecorder()
@@ -69,9 +71,9 @@ async def test_send_message_api_error(mock_post):
     "translator.config.CHANNEL_CONFIGS",
     {"test": ChannelConfig(channel_id=TEST_CHANNEL_ID, bot_token=TEST_BOT_TOKEN)},
 )
-@patch("requests.Session.post")
+@patch("httpx.AsyncClient.post")
 async def test_send_message_success(mock_post):
-    mock_post.return_value.status_code = 200
+    mock_post.return_value = MagicMock(status_code=200)
     mock_post.return_value.json.return_value = {"ok": True, "result": {"message_id": 123}}
     sender = TelegramSender()
     recorder = EventRecorder()

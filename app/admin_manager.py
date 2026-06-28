@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 from datetime import datetime, timezone
 from flask import Blueprint, render_template, request, jsonify, session, flash, redirect, url_for, abort
 import requests
@@ -12,6 +13,55 @@ from translator.services.event_logger import EventRecorder
 from translator.config import BOT_TOKEN
 
 admin_manager_bp = Blueprint("admin_manager_bp", __name__)
+
+
+def _load_all_events():
+    """Backend-aware read of all event dicts (the old `recorder.stats` view).
+
+    Under the SQLite backend `recorder.stats` is no longer populated, so admin
+    reads go straight to the active store. Returns [] on any error.
+    """
+    from translator.config import STORAGE_BACKEND, EVENTS_PATH
+    if STORAGE_BACKEND == "sqlite":
+        try:
+            from translator.db import events_dao
+            return events_dao.load_messages()
+        except Exception:
+            return []
+    import json as _json
+    try:
+        with open(EVENTS_PATH, "r", encoding="utf-8") as f:
+            return _json.load(f).get("messages", [])
+    except (OSError, _json.JSONDecodeError):
+        return []
+
+
+def _delete_events_for_message(message_id, source_channel_id=None) -> int:
+    """Backend-aware delete of a source message's events. Returns rows removed."""
+    from translator.config import STORAGE_BACKEND, EVENTS_PATH
+    if STORAGE_BACKEND == "sqlite":
+        from translator.db import events_dao
+        return events_dao.delete_by_message_id(message_id, source_channel_id)
+    # Legacy JSON: rewrite the file without the matching rows.
+    import json as _json
+    try:
+        with open(EVENTS_PATH, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+    except (OSError, _json.JSONDecodeError):
+        return 0
+    messages = data.get("messages", [])
+    kept = [
+        m for m in messages
+        if not (
+            str(m.get("message_id")) == str(message_id)
+            and (source_channel_id is None
+                 or str(m.get("source_channel_id")) == str(source_channel_id))
+        )
+    ]
+    data["messages"] = kept
+    with open(EVENTS_PATH, "w", encoding="utf-8") as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2)
+    return len(messages) - len(kept)
 
 
 def fetch_channel_title(channel_id, bot_token=None):
@@ -106,16 +156,20 @@ def clean_telegram_html(content: str) -> str:
     if not content:
         return ""
     
-    # Pre-process: Convert strong/em to b/i before cleaning
-    # This ensures they're preserved during bleach cleaning
-    content = re.sub(r'<strong>(.*?)</strong>', r'<b>\1</b>', content)
-    content = re.sub(r'<em>(.*?)</em>', r'<i>\1</i>', content)
-    
-    # Be more conservative with allowed tags to avoid API errors
-    # Only use the most basic and well-supported Telegram HTML tags
-    telegram_allowed_tags = ['b', 'i', 'u', 'a', 'code']
+    # Pre-process: normalize HTML5 synonyms to Telegram's canonical tags so they
+    # survive cleaning instead of being stripped.
+    content = re.sub(r'<(/?)strong>', r'<\1b>', content)
+    content = re.sub(r'<(/?)em>', r'<\1i>', content)
+    content = re.sub(r'<(/?)ins>', r'<\1u>', content)
+    content = re.sub(r'<(/?)(?:strike|del)>', r'<\1s>', content)
+
+    # Telegram-supported HTML tags (Bot API). Widened from b/i/u/a/code so that
+    # strikethrough, spoilers, code blocks and quotes aren't silently dropped.
+    telegram_allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre', 'blockquote', 'tg-spoiler']
     telegram_allowed_attributes = {
-        'a': ['href']
+        'a': ['href'],
+        'code': ['class'],   # e.g. class="language-python" for code blocks
+        'blockquote': ['expandable'],
     }
     
     # Clean with bleach - this removes unsupported tags and attributes
@@ -138,7 +192,7 @@ def clean_telegram_html(content: str) -> str:
     cleaned = re.sub(r'<([a-z]+)\s*/>(?!</)', '', cleaned)
     
     # Remove nested identical tags to prevent API issues
-    for tag in ['b', 'i', 'u', 'code']:
+    for tag in ['b', 'i', 'u', 's', 'code']:
         pattern = f'<{tag}>(<{tag}>.*?</{tag}>)</{tag}>'
         while re.search(pattern, cleaned):
             cleaned = re.sub(pattern, r'\1', cleaned)
@@ -369,21 +423,20 @@ def channel_translate():
 
     recorder = EventRecorder()
 
-    # To fetch recent messages for a channel, filter from event_recorder.stats
+    # Fetch recent messages for a channel from the active event store.
     def get_recent_messages(channel_id):
         from datetime import datetime
 
+        all_events = _load_all_events()
         msgs = [
-            m for m in recorder.stats.get("messages", [])
+            m for m in all_events
             if str(m.get("source_channel_id")) == str(channel_id)
         ]
         # Sort by timestamp descending
         msgs = sorted(msgs, key=lambda m: m.get("timestamp", ""), reverse=True)
-        
-        print(f"\n{'='*20} GET_RECENT_MESSAGES DEBUG {'='*20}")
-        print(f"Channel ID: {channel_id}")
-        print(f"Total messages in recorder: {len(recorder.stats.get('messages', []))}")
-        print(f"Filtered messages for channel: {len(msgs)}")
+
+        logging.debug("get_recent_messages: channel=%s total=%d filtered=%d",
+                      channel_id, len(all_events), len(msgs))
         
         # Group messages by message_id and keep the best one (with content and successful posting)
         message_groups = {}
@@ -515,11 +568,9 @@ def channel_translate():
                 print(f"  Html length: {len(payload['Html'])}")
                 print(f"  Link: {payload['Link']}")
                 
-                # Check API key
+                # Check API key (presence only — never log key material)
                 api_key = os.getenv("ANTHROPIC_API_KEY", "")
-                print(f"API key present: {bool(api_key)}")
-                print(f"API key length: {len(api_key) if api_key else 0}")
-                print(f"API key starts with: {api_key[:10]}..." if api_key else "NO KEY")
+                logging.info("Anthropic API key present: %s", bool(api_key))
                 
                 anthropic_client = Anthropic(api_key=api_key)
                 print("Anthropic client created successfully")
@@ -583,12 +634,12 @@ def channel_translate():
                 )
                 if resp.status_code == 200 and resp.json().get("ok"):
                     delete_result = "Message deleted successfully."
-                    # Remove from event log
-                    recorder.stats["messages"] = [
-                        m for m in recorder.stats["messages"]
-                        if str(m.get("message_id")) != str(selected_message_id)
-                    ]
-                    recorder.finalize()
+                    # Remove from the event store (backend-aware).
+                    removed = _delete_events_for_message(
+                        selected_message_id, selected_channel_id
+                    )
+                    logging.info("Deleted message %s; removed %d event row(s)",
+                                 selected_message_id, removed)
                 else:
                     delete_result = f"Failed to delete message: {resp.text}"
             except Exception as e:
@@ -699,11 +750,9 @@ def channel_translate():
                 print(f"  Html length: {len(payload['Html'])}")
                 print(f"  Link: {payload['Link']}")
                 
-                # Check API key
+                # Check API key (presence only — never log key material)
                 api_key = os.getenv("ANTHROPIC_API_KEY", "")
-                print(f"API key present: {bool(api_key)}")
-                print(f"API key length: {len(api_key) if api_key else 0}")
-                print(f"API key starts with: {api_key[:10]}..." if api_key else "NO KEY")
+                logging.info("Anthropic API key present: %s", bool(api_key))
                 
                 anthropic_client = Anthropic(api_key=api_key)
                 print("Anthropic client created successfully")
@@ -798,19 +847,19 @@ def channel_translate():
 
                 edit_mode = request.form.get("edit_mode")
                 if edit_mode:
-                    # Find the message to edit in the event log
+                    # Resolve the destination message id for this source message.
                     msg_id = None
-                    for m in recorder.stats["messages"]:
-                        if (
-                            str(m.get("source_channel_id")) == str(selected_channel_id)
-                            and str(m.get("source_message_id")) == str(selected_message_id)
-                        ):
-                            msg_id = m.get("message_id")
-                            break
-                    if msg_id:
-                        ok = sender.edit_message(
-                            selected_target_channel_id, msg_id, message_to_send, recorder
+                    try:
+                        from translator.config import CONFIG
+                        msg_id = CONFIG.get_destination_msg_id(
+                            int(selected_channel_id), str(selected_message_id)
                         )
+                    except (ValueError, TypeError) as e:
+                        logging.warning("Edit lookup failed: %s", e)
+                    if msg_id:
+                        ok = asyncio.run(sender.edit_message(
+                            selected_target_channel_id, msg_id, message_to_send, recorder
+                        ))
                         post_result = (
                             "Edited matching message."
                             if ok
@@ -998,8 +1047,8 @@ def log_message_state(prefix: str, **kwargs):
     print(f"{'='*50}\n")
 
 
-async def get_error_details(error, context=None):
-    """Get detailed error information in a structured format"""
+def get_error_details(error, context=None):
+    """Get detailed error information in a structured format (pure, no I/O)."""
     error_info = {
         'code': 'POST-ERR-000',
         'message': str(error) if error else 'Unknown error occurred',
@@ -1097,8 +1146,12 @@ async def get_error_details(error, context=None):
 
 @admin_manager_bp.route("/post_translation", methods=["POST"])
 @login_required
-async def post_translation():
-    """Handle post translation requests with detailed logging"""
+def post_translation():
+    """Handle post translation requests with detailed logging.
+
+    Synchronous route (WSGI/PythonAnywhere has no ASGI): async sender calls are
+    driven via ``asyncio.run``, which is only valid because this is a plain def.
+    """
     # Log all form data
     form_data = {}
     # Convert form data to dict and handle special fields
@@ -1178,24 +1231,18 @@ async def post_translation():
             )
 
             if edit_mode:
+                # Resolve the previously-posted destination message id for this
+                # source message — exactly what CONFIG.get_destination_msg_id does
+                # (replaces a broken loop that matched a non-existent field).
                 msg_id = None
-                # Log all messages in recorder for debugging
-                log_message_state("EVENT RECORDER MESSAGES",
-                    messages=recorder.stats.get("messages", [])
-                )
-                
-                for m in recorder.stats.get("messages", []):
-                    log_message_state("CHECKING MESSAGE MATCH",
-                        recorder_message=m,
-                        source_channel_match=str(m.get("source_channel_id")) == str(selected_channel_id),
-                        message_id_match=str(m.get("source_message_id")) == str(selected_message_id)
+                try:
+                    from translator.config import CONFIG
+                    msg_id = CONFIG.get_destination_msg_id(
+                        int(selected_channel_id), str(selected_message_id)
                     )
-                    
-                    if (str(m.get("source_channel_id")) == str(selected_channel_id) 
-                        and str(m.get("source_message_id")) == str(selected_message_id)):
-                        msg_id = m.get("message_id")
-                        break
-                
+                except (ValueError, TypeError) as e:
+                    log_message_state("EDIT LOOKUP FAILED", error=str(e))
+
                 if msg_id:
                     log_message_state("EDITING MESSAGE",
                         target_channel=selected_target_channel_id,
@@ -1203,19 +1250,16 @@ async def post_translation():
                         content_length=len(message_to_send)
                     )
                     
-                    ok = sender.edit_message(
+                    ok = asyncio.run(sender.edit_message(
                         selected_target_channel_id, msg_id, message_to_send, recorder
-                    )
-                    
-                    log_message_state("EDIT RESULT",
-                        success=ok,
-                        updated_stats=recorder.stats
-                    )
-                    
+                    ))
+
+                    log_message_state("EDIT RESULT", success=ok)
+
                     if ok:
                         post_result = {"success": True, "message": "Message edited successfully."}
                     else:
-                        error_info = await get_error_details(None)
+                        error_info = get_error_details(None)
                         log_message_state("EDIT FAILED", error_info=error_info)
                         post_result = {
                             "success": False,
@@ -1253,7 +1297,7 @@ async def post_translation():
                         "source_channel_id": selected_channel_id,
                         "message_id": selected_message_id
                     }
-                    error_info = await get_error_details(None, context=message_context)
+                    error_info = get_error_details(None, context=message_context)
                     log_message_state("SEND FAILED", error_info=error_info)
                     post_result = {
                         "success": False,
@@ -1262,8 +1306,8 @@ async def post_translation():
                     }
 
         except Exception as e:
-            error_info = await get_error_details(e)
-            log_message_state("EXCEPTION", 
+            error_info = get_error_details(e)
+            log_message_state("EXCEPTION",
                 error=str(e),
                 error_info=error_info,
                 traceback=traceback.format_exc()
@@ -1284,129 +1328,3 @@ async def post_translation():
 
     # Return empty success response for non-post actions
     return jsonify({"post_result": {"success": True}})
-
-
-async def edit_message(recorder: EventRecorder, edit_context: dict):
-    """Handle message editing with detailed logging"""
-    try:
-        from translator.services.telegram_sender import TelegramSender
-        sender = TelegramSender()
-        msg_id = None
-        
-        # Log all messages for debugging
-        log_message_state("EDIT - SEARCHING MESSAGES",
-            message_count=len(recorder.stats.get("messages", [])),
-            source_channel=edit_context['source_channel_id'],
-            message_id=edit_context['message_id']
-        )
-        
-        # Check each recorder message for a match
-        for m in recorder.stats.get("messages", []):
-            log_recorder_message(m, "EDIT - CHECKING MATCH",
-                source_match=str(m.get("source_channel_id")) == str(edit_context['source_channel_id']),
-                id_match=str(m.get("source_message_id")) == str(edit_context['message_id'])
-            )
-            
-            if (str(m.get("source_channel_id")) == str(edit_context['source_channel_id']) 
-                and str(m.get("source_message_id")) == str(edit_context['message_id'])):
-                msg_id = m.get("message_id")
-                break
-        
-        if msg_id:
-            log_message_state("EDIT - ATTEMPTING UPDATE",
-                target_channel=edit_context['target_channel_id'],
-                message_id=msg_id,
-                message_length=len(edit_context['message_content'])
-            )
-            
-            ok = sender.edit_message(
-                edit_context['target_channel_id'], 
-                msg_id, 
-                edit_context['message_content'], 
-                recorder
-            )
-            
-            if ok:
-                log_message_state("EDIT - SUCCESS",
-                    target_channel=edit_context['target_channel_id'],
-                    message_id=msg_id,
-                    recorder_state=recorder.stats
-                )
-                return {"success": True, "message": "Message edited successfully."}
-            else:
-                error_info = await get_error_details(None, context=edit_context)
-                log_message_state("EDIT - FAILED", error_info=error_info)
-                return {
-                    "success": False,
-                    "message": "Failed to edit message.",
-                    "error": error_info
-                }
-        else:
-            log_message_state("EDIT - NO MESSAGE FOUND", 
-                source_channel=edit_context['source_channel_id'],
-                message_id=edit_context['message_id']
-            )
-            return {
-                "success": False,
-                "message": "No matching message found to edit.",
-                "code": "EDIT-ERR-001"
-            }
-            
-    except Exception as e:
-        error_info = await get_error_details(e, context=edit_context)
-        log_message_state("EDIT - EXCEPTION",
-            error=str(e),
-            error_info=error_info,
-            context=edit_context
-        )
-        return {
-            "success": False,
-            "message": "Failed to edit message.",
-            "error": error_info
-        }
-
-
-async def send_new_message(recorder: EventRecorder, message_context: dict):
-    """Handle sending new messages with detailed logging"""
-    try:
-        from translator.services.telegram_sender import TelegramSender
-        sender = TelegramSender()
-        
-        log_message_state("NEW MESSAGE - ATTEMPTING SEND",
-            target_channel=message_context['target_channel_id'],
-            message_length=len(message_context['message_content']),
-            has_html='<' in message_context['message_content']
-        )
-        
-        ok = asyncio.run(
-            sender.send_message(message_context['message_content'], recorder)
-        )
-        
-        if ok:
-            log_message_state("NEW MESSAGE - SUCCESS",
-                target_channel=message_context['target_channel_id'],
-                message_id=getattr(sender, "last_message_id", None),
-                recorder_state=recorder.stats
-            )
-            return {"success": True, "message": "Posted successfully."}
-        else:
-            error_info = await get_error_details(None, context=message_context)
-            log_message_state("NEW MESSAGE - FAILED", error_info=error_info)
-            return {
-                "success": False,
-                "message": "Failed to post message.",
-                "error": error_info
-            }
-            
-    except Exception as e:
-        error_info = await get_error_details(e, context=message_context)
-        log_message_state("NEW MESSAGE - EXCEPTION",
-            error=str(e),
-            error_info=error_info,
-            context=message_context
-        )
-        return {
-            "success": False,
-            "message": "Failed to post message.",
-            "error": error_info
-        }

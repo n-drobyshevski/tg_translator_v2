@@ -38,10 +38,15 @@ from telegram.ext import Application
 # === Utility imports ===
 from translator.utils.utils_html import entities_to_html
 from translator.utils.utils_async import run_with_retries
+from translator.utils.single_instance import (
+    acquire_single_instance_lock,
+    AlreadyRunningError,
+)
 from translator.utils.translation_utils import translate_html
 from translator.utils.message_utils import get_media_info, build_payload
 from translator.services.telegram_sender import TelegramSender
 from translator.services.event_logger import EventRecorder
+from translator.services.error_sender import send_alert
 
 # PTB optional rate limiter
 try:
@@ -50,6 +55,10 @@ except ImportError:  # pragma: no cover
     AIORateLimiter = None
 
 query_queue = asyncio.Queue()
+
+# Max seconds to wait for the PTB worker to answer a metadata request. On timeout
+# the handler degrades to no-metadata instead of blocking forever on the future.
+META_TIMEOUT = float(os.getenv("META_TIMEOUT", "30"))
 
 
 ###############################################################################
@@ -149,7 +158,16 @@ async def ptb_worker(ptb_app: Application, stop_event: asyncio.Event):
                     ptb_log.warning("Bot API error: %s", err_msg)
                     meta["file_error"] = err_msg
 
-        req.response.set_result(meta)
+        # The handler may have already given up (wait_for timeout cancelled the
+        # future); setting a result then would raise InvalidStateError.
+        if not req.response.done():
+            req.response.set_result(meta)
+        else:
+            ptb_log.warning(
+                "Dropping metadata for chat %s msg %s: request already timed out/cancelled",
+                req.chat_id,
+                req.message_id,
+            )
 
 
 ###############################################################################
@@ -190,10 +208,16 @@ def register_handlers(
         ]
         try:
             await query_queue.put(req)
-            meta = await req.response
-            file_path = meta.get("file").get("file_path")
-            recorder.set(file_path=file_path)
-            # Convert entities to HTML
+            meta = await asyncio.wait_for(req.response, timeout=META_TIMEOUT)
+            # `file` is None for text-only posts; guard so they don't fall into
+            # the except branch and lose entity→HTML conversion.
+            file_obj = meta.get("file") or {}
+            if file_obj.get("file_path"):
+                recorder.set(file_path=file_obj["file_path"])
+            html_text = entities_to_html(text, msg.entities or msg.caption_entities)
+        except asyncio.TimeoutError:
+            pyro_log.warning("PTB worker timed out after %ss; degrading metadata", META_TIMEOUT)
+            meta = {}
             html_text = entities_to_html(text, msg.entities or msg.caption_entities)
         except Exception as e:
             pyro_log.warning("!!! PTB worker failed: %s", e)
@@ -261,6 +285,10 @@ def register_handlers(
                 exception_message=exception_message, api_error_code=api_error_code
             )
             pyro_log.error("FAILED %s: %s", msg.id, exc)
+            await send_alert(
+                f"Relay FAILED for msg {msg.id} in '{msg.chat.title}': {exc}",
+                key="relay-fail",
+            )
         # === 4. Log event and finalize recorder ===
         recorder.finalize()
         pyro_log.info("=============================================")
@@ -299,7 +327,11 @@ def register_handlers(
         ]
         try:
             await query_queue.put(req)
-            meta = await req.response
+            meta = await asyncio.wait_for(req.response, timeout=META_TIMEOUT)
+            html_text = entities_to_html(text, msg.entities or msg.caption_entities)
+        except asyncio.TimeoutError:
+            pyro_log.warning("PTB worker timed out after %ss; degrading metadata", META_TIMEOUT)
+            meta = {}
             html_text = entities_to_html(text, msg.entities or msg.caption_entities)
         except Exception as e:
             pyro_log.warning("!!! PTB worker failed: %s", e)
@@ -373,6 +405,10 @@ def register_handlers(
             recorder.set(
                 exception_message=exception_message, api_error_code=api_error_code
             )
+            await send_alert(
+                f"Edit relay FAILED for msg {msg.id} in '{msg.chat.title}': {exc}",
+                key="edit-fail",
+            )
 
         recorder.finalize()
         pyro_log.info("=============================================")
@@ -385,7 +421,15 @@ def register_handlers(
 ###############################################################################
 async def main_async():
     logger.info("=== BOT STARTUP ===")
-    # --- Session lock check ---
+    # --- Single-instance guard ---
+    # Exclusive advisory lock: refuses to start if another instance is running
+    # (even an idle one), preventing duplicate posting. Released on process exit.
+    try:
+        acquire_single_instance_lock(os.path.join(CACHE_DIR, "bot.lock"))
+    except AlreadyRunningError as e:
+        logger.error("%s", e)
+        raise
+    # Corruption check on the MTProto session DB (separate concern from locking).
     session_file = "bot.session"
     if os.path.exists(session_file):
         try:
@@ -399,7 +443,7 @@ async def main_async():
                     session_file,
                 )
                 raise
-    # --- end session lock check ---
+    # --- end single-instance guard ---
 
     pyro, ptb_app, anthropic, sender, event_recorder = init_clients()
 

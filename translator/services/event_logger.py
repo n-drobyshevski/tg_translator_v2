@@ -2,39 +2,47 @@ import os
 import json
 from typing import Any, Dict,  Tuple
 import logging
+from translator import config as _cfg
 from translator.config import EVENTS_PATH, DEFAULT_STATS
 
 from translator.models import MessageEvent
+
+# Default value per annotated field type. Looked up by the annotation object so
+# it is robust even if annotations are strings (PEP 563). float -> 0.0 (NOT False,
+# which was a long-standing bug that stored translation_time as `false`).
+_TYPE_DEFAULTS = {int: 0, float: 0.0, bool: False, str: ""}
 
 class EventRecorder:
     stats: Dict[str, Any]
     payload: Dict[str, Any]
 
     def __init__(self) -> None:
-        self._load_base()
+        # The legacy JSON path keeps an in-memory copy of the whole file; the
+        # SQLite path appends row-by-row and needs no base load.
+        if _cfg.STORAGE_BACKEND == "json":
+            self._load_base()
+        else:
+            self.stats = {"messages": []}
         self.reset()
 
     def _load_base(self) -> None:
         try:
             with open(EVENTS_PATH, "r", encoding="utf-8") as f:
                 self.stats = json.load(f)
-        except:
+        except (OSError, json.JSONDecodeError) as e:
+            logging.warning("Could not load %s (%s); starting fresh", EVENTS_PATH, e)
             self.stats = DEFAULT_STATS.copy()
         self.stats.setdefault("messages", [])
 
     def prefill(self) -> None:
         """
-        Fill all fields of payload with default values (0, "", or None as appropriate).
+        Fill all fields of payload with type-appropriate defaults (0, 0.0, False, "").
         """
         from translator.models import MessageEvent
-        self.payload = {}
-        for field, typ in MessageEvent.__annotations__.items():
-            if typ == int:
-                self.payload[field] = 0
-            elif typ == float:
-                self.payload[field] = False
-            else:
-                self.payload[field] = ""
+        self.payload = {
+            field: _TYPE_DEFAULTS.get(typ, "")
+            for field, typ in MessageEvent.__annotations__.items()
+        }
 
     def reset(self) -> None:
         self.prefill()
@@ -60,19 +68,24 @@ class EventRecorder:
         return values[0] if len(fields) == 1 else tuple(values)
 
     def finalize(self) -> None:
-        # Derive event_type if needed
-        if self.payload["event_type"] is None:
+        # Derive event_type if not set (prefill leaves it as "").
+        if self.payload.get("event_type") in (None, ""):
             self.payload["event_type"] = (
-                "edit" if self.payload["edit_timestamp"] else "create"
+                "edit" if self.payload.get("edit_timestamp") else "create"
             )
-        # Create MessageEvent and append
-        evt = MessageEvent(**self.payload)
-        self.stats["messages"].append(evt.to_dict())
 
-        # Write stats
-        os.makedirs(os.path.dirname(EVENTS_PATH), exist_ok=True)
-        with open(EVENTS_PATH, "w", encoding="utf-8") as f:
-            json.dump(self.stats, f, ensure_ascii=False, indent=2)
+        if _cfg.STORAGE_BACKEND == "json":
+            # Legacy path: append to the in-memory list and rewrite the whole file.
+            evt = MessageEvent(**self.payload)
+            self.stats["messages"].append(evt.to_dict())
+            os.makedirs(os.path.dirname(EVENTS_PATH), exist_ok=True)
+            with open(EVENTS_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.stats, f, ensure_ascii=False, indent=2)
+        else:
+            # SQLite path: single-row append, multi-process safe under WAL.
+            from translator.db import events_dao
+            events_dao.insert_event(self.payload)
+
         logging.info("Event recorded")
         # Optionally reset for reuse
         self.reset()

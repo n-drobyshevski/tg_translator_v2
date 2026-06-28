@@ -100,7 +100,15 @@ def admin_config():
                 os.environ["PYTHONANYWHERE_USERNAME"] = new_pythonanywhere_username
             if new_admin_password:
                 os.environ["ADMIN_PASSWORD"] = new_admin_password
-            message = "Configuration saved successfully."
+            # These writes only mutate this web process's os.environ: they do NOT
+            # persist across a restart and do NOT reach the separate always-on bot
+            # task. Be explicit so the operator updates the real env (.env / the
+            # PythonAnywhere task config) and restarts the bot.
+            message = (
+                "Applied to the running web app only. NOT persisted and NOT applied "
+                "to the bot — update your .env / PythonAnywhere config and restart "
+                "the bot task for these to take effect."
+            )
             # Reload current values after saving
             current_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
             current_api_key = os.getenv("ANTHROPIC_API_KEY", "")

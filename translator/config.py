@@ -46,6 +46,12 @@ class Config:
         self.TELEGRAM_API_ID = int(self._require("TELEGRAM_API_ID"))
         self.TELEGRAM_API_HASH = self._require("TELEGRAM_API_HASH")
         self.ANTHROPIC_API_KEY = self._require("ANTHROPIC_API_KEY")
+        # Translation model + params (env-overridable so future model swaps need no code change).
+        # NOTE: claude-3-haiku-20240307 was retired 2026-04-20; the default below is its
+        # Anthropic-recommended replacement.
+        self.ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
+        self.ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "1500"))
+        self.ANTHROPIC_TEMPERATURE = float(os.getenv("ANTHROPIC_TEMPERATURE", "0"))
         self.SOURCE_TEST_ID = int(self._require("TEST_CHANNEL"))
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -198,6 +204,10 @@ class Config:
         if not message_id:
             raise ValueError("message_id cannot be empty")
 
+        if STORAGE_BACKEND == "sqlite":
+            from translator.db import events_dao
+            return events_dao.get_destination_msg_id(source_channel_id, message_id)
+
         # Convert to strings for comparison since events log stores them as strings
         source_channel_id_str = str(source_channel_id)
         message_id_str = str(message_id)
@@ -249,6 +259,15 @@ EVENTS_PATH = os.path.join(CACHE_DIR, "events.json")
 STORE_PATH = os.path.join(CACHE_DIR, "channel_cache.json")
 DEFAULT_STATS = {"messages": []}
 MESSAGES_LIMIT = 9
+
+# Event storage backend. "sqlite" (default) uses translator/cache/events.db via
+# translator.db; "json" keeps the legacy events.json read/modify/write path and
+# exists purely as an instant rollback switch. See translator/db/.
+DB_PATH = os.path.join(CACHE_DIR, "events.db")
+STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "sqlite").lower()
+# WAL is correct for concurrent bot+Flask access; overridable to TRUNCATE if the
+# host filesystem (e.g. some PythonAnywhere mounts) doesn't support WAL safely.
+SQLITE_JOURNAL_MODE = os.getenv("SQLITE_JOURNAL_MODE", "WAL").upper()
 
 # Prompt loader
 PROMPT_TEMPLATE_PATH = Path(__file__).parent / "prompt_template.txt"

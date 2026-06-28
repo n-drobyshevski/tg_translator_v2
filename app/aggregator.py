@@ -31,6 +31,11 @@ def load_messages() -> List[Dict[str, Any]]:
     Raises:
         FileNotFoundError: If the events file does not exist.
     """
+    from translator.config import STORAGE_BACKEND
+    if STORAGE_BACKEND == "sqlite":
+        from translator.db import events_dao
+        return events_dao.load_messages()
+
     if not os.path.exists(EVENTS_PATH):
         raise FileNotFoundError(f"Events file not found: {EVENTS_PATH}")
     with open(EVENTS_PATH, "r", encoding="utf-8") as f:

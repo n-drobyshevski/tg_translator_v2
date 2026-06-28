@@ -23,9 +23,24 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 
+import logging
+import secrets
+
 app = Flask(__name__)
-app.config["DEBUG"] = True
-app.secret_key = os.getenv("SECRET_KEY") or "dev_secret_key"  # ensure non-empty default
+# Debug OFF by default — never expose the interactive debugger in production.
+# Opt in locally with FLASK_DEBUG=1.
+app.config["DEBUG"] = os.getenv("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+
+# Session signing key. Never ship a hardcoded default; if unset, use an ephemeral
+# random key (sessions reset on restart) and warn rather than a guessable constant.
+_secret = os.getenv("SECRET_KEY")
+if not _secret:
+    _secret = secrets.token_hex(32)
+    logging.warning(
+        "SECRET_KEY not set; using an ephemeral random key. Sessions will reset on "
+        "restart. Set SECRET_KEY in the environment for production."
+    )
+app.secret_key = _secret
 
 # --- Setup Flask-Login ---
 login_manager = LoginManager()
@@ -33,7 +48,15 @@ login_manager.init_app(app)
 login_manager.login_view = "login"  # type: ignore
 
 # --- Static Admin User ---
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
+# No "admin" default — that would leave the panel open. If unset, generate a
+# random password (effectively disabling login until the operator sets one).
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    ADMIN_PASSWORD = secrets.token_urlsafe(24)
+    logging.error(
+        "ADMIN_PASSWORD not set; login is disabled (random password generated). "
+        "Set ADMIN_PASSWORD in the environment to enable the admin panel."
+    )
 
 
 class Admin(UserMixin):

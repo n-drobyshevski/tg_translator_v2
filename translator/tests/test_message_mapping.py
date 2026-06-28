@@ -31,6 +31,7 @@ def test_get_destination_msg_id_basic(tmp_path, monkeypatch):
 
     # Mock EVENTS_PATH directly in config module
     monkeypatch.setattr('translator.config.EVENTS_PATH', str(events_path))
+    monkeypatch.setattr('translator.config.STORAGE_BACKEND', 'json')  # exercise the legacy JSON lookup
     
     # Should return the most recent mapping (201)
     result = CONFIG.get_destination_msg_id(-1002657093374, "100")
@@ -61,6 +62,7 @@ def test_get_destination_msg_id_edge_cases(tmp_path, monkeypatch):
         json.dump(events_data, f, indent=2)
 
     monkeypatch.setattr('translator.config.EVENTS_PATH', str(events_path))
+    monkeypatch.setattr('translator.config.STORAGE_BACKEND', 'json')  # exercise the legacy JSON lookup
     
     # Non-existent message should return None
     assert CONFIG.get_destination_msg_id(-1002657093374, "999") is None
@@ -83,6 +85,7 @@ def test_get_destination_msg_id_file_handling(tmp_path, monkeypatch):
     """Test file handling edge cases"""
     events_path = tmp_path / "nonexistent.json"
     monkeypatch.setattr('translator.config.EVENTS_PATH', str(events_path))
+    monkeypatch.setattr('translator.config.STORAGE_BACKEND', 'json')  # exercise the legacy JSON lookup
 
     # Missing file should return None
     assert CONFIG.get_destination_msg_id(-1002657093374, "100") is None

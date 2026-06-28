@@ -1,8 +1,9 @@
+import asyncio
 from typing import Any, Dict
 from anthropic import Anthropic
 import logging
 import re
-from translator.config import  load_prompt_template
+from translator.config import CONFIG, load_prompt_template
 
 PROMPT_TEMPLATE = load_prompt_template()
 
@@ -18,13 +19,19 @@ def build_prompt(html_text: str, channel: str, link: str) -> str:
     return f"{intro}\n\n{body}".strip()
 
 async def translate_html(client: Anthropic, payload: Dict[str, Any]) -> str:
-    """Send payload to Anthropic and return translated text."""
+    """Send payload to Anthropic and return translated text.
+
+    The Anthropic SDK call is synchronous (blocking); it is run in a worker
+    thread via ``asyncio.to_thread`` so it never blocks the bot's event loop.
+    Model and params come from ``CONFIG`` so they can be changed via env vars
+    without touching code (e.g. when a model is deprecated).
+    """
     prompt = build_prompt(payload["Html"], payload["Channel"], payload["Link"])
-    # logging.info(f"Generated prompt: {prompt}")
-    resp = client.messages.create(
-        model="claude-3-haiku-20240307",
-        max_tokens=1500,
-        temperature=0,
+    resp = await asyncio.to_thread(
+        client.messages.create,
+        model=CONFIG.ANTHROPIC_MODEL,
+        max_tokens=CONFIG.ANTHROPIC_MAX_TOKENS,
+        temperature=CONFIG.ANTHROPIC_TEMPERATURE,
         messages=[{"role": "user", "content": prompt}],
     )
     # strip out non-HTML tags like <translation>, <example>, <source>, <user>, <instructions>, <system>

@@ -136,8 +136,8 @@ async def test_send_photo_message_success():
     )
     
     with patch("translator.services.telegram_sender.CHANNEL_CONFIGS", TEST_CONFIGS), \
-         patch("requests.Session.post") as mock_post:
-        mock_post.return_value.status_code = 200
+         patch("httpx.AsyncClient.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200)
         mock_post.return_value.json.return_value = {
             "ok": True,
             "result": {"message_id": 789}
@@ -166,8 +166,8 @@ async def test_send_photo_message_api_error():
     )
     
     with patch("translator.services.telegram_sender.CHANNEL_CONFIGS", TEST_CONFIGS), \
-         patch("requests.Session.post") as mock_post:
-        mock_post.return_value.status_code = 400
+         patch("httpx.AsyncClient.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=400)
         mock_post.return_value.json.return_value = {
             "ok": False,
             "description": "Bad photo"
@@ -197,8 +197,8 @@ async def test_edit_message_success():
     )
     
     with patch("translator.services.telegram_sender.CHANNEL_CONFIGS", TEST_CONFIGS), \
-         patch("requests.Session.post") as mock_post:
-        mock_post.return_value.status_code = 200
+         patch("httpx.AsyncClient.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200)
         mock_post.return_value.json.return_value = {
             "ok": True,
             "result": {"message_id": 123}
