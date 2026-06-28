@@ -18,6 +18,7 @@ unit-tested with plain strings; the Pyrogram-aware glue lives at the bottom.
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -25,7 +26,7 @@ from typing import List, Optional, Tuple
 from pyrogram import enums
 
 from translator.config import CONFIG
-from translator.services import admin_commands
+from translator.services import admin_commands, admin_store
 
 log = logging.getLogger("ADMIN.MENU")
 
@@ -43,10 +44,14 @@ BUTTON_COMMANDS = {
     "📊 Status": "/status",
     "📈 Stats": "/stats",
     "📡 Channels": "/channels",
+    "👤 Admins": "/admins",
     "📝 Prompt": "/prompt",
     "🔄 Reload": "/reload",
     "❓ Help": "/help",
     "🛠️ Settings": "/settings",
+    # Shown on the temporary "add admin" keyboard; resolves to /menu so tapping
+    # it cancels the add-flow and restores the main keyboard.
+    "🔙 Back to menu": "/menu",
 }
 
 MENU_GREETING = (
@@ -67,9 +72,9 @@ def build_reply_keyboard() -> List[List[str]]:
     """Spec for the persistent reply keyboard (rows of plain labels)."""
     return [
         ["📊 Status", "📈 Stats"],
-        ["📡 Channels", "📝 Prompt"],
-        ["🔄 Reload", "❓ Help"],
-        ["🛠️ Settings"],
+        ["📡 Channels", "👤 Admins"],
+        ["📝 Prompt", "🔄 Reload"],
+        ["❓ Help", "🛠️ Settings"],
     ]
 
 
@@ -84,6 +89,16 @@ TEMP_PRESETS = ["0", "0.3", "0.5", "0.7", "1.0"]
 TOKEN_PRESETS = ["1500", "2000", "4000", "8192"]
 
 _BACK_TO_SETTINGS: Row = [("◀️ Back", "nav:settings")]
+
+# Identifier echoed back in ``users_shared.button_id`` for the add-admin picker.
+ADD_ADMIN_BUTTON_ID = 1
+ADD_ADMIN_PROMPT = (
+    "<b>➕ Add admin</b>\n"
+    "Tap “👤 Pick a user…” to choose someone from your chats — I'll capture their "
+    "id and name automatically.\n"
+    "Or type <code>/addadmin &lt;user_id&gt;</code> or "
+    "<code>/addadmin @username</code> [label]."
+)
 
 
 @dataclass
@@ -106,6 +121,7 @@ def _settings_menu() -> Tuple[str, Rows]:
         [("🌡️ Temperature", "nav:temp"), ("🔢 Max Tokens", "nav:tokens")],
         [("🪵 Log Level", "nav:log")],
         [("🗑️ Remove Channel", "nav:rmch")],
+        [("👤 Admins", "nav:admins")],
         [("✖️ Close", "nav:close")],
     ]
     return title, rows
@@ -179,6 +195,42 @@ def _rmch_confirm(name: str) -> Tuple[str, Rows]:
     return title, rows
 
 
+def _admins_menu() -> Tuple[str, Rows]:
+    admins = admin_store.list_admins()
+    lines = ["<b>👤 Admins</b>"]
+    for a in admins:
+        if a["label"]:
+            lines.append(f"{html.escape(a['label'])} (<code>{a['id']}</code>)")
+        elif a["resolved"]:
+            lines.append(f"{html.escape(a['resolved'])} (<code>{a['id']}</code>)")
+        else:
+            lines.append(f"<code>{a['id']}</code>")
+    if not admins:
+        lines.append("(none)")
+    lines += [
+        "",
+        "Tap an admin to remove. Add via <code>/addadmin &lt;id&gt; [label]</code>.",
+    ]
+    title = "\n".join(lines)
+    rows: Rows = [
+        [(f"🗑️ {a['display']}", f"rmadmin:{a['id']}")] for a in admins
+    ]
+    rows.append([("➕ Add admin", "admin:add")])
+    rows.append(list(_BACK_TO_SETTINGS))
+    return title, rows
+
+
+def _admin_confirm(uid: str) -> Tuple[str, Rows]:
+    title = (
+        f"<b>👤 Remove admin <code>{html.escape(uid)}</code>?</b>\n"
+        "They lose DM control and stop receiving alerts."
+    )
+    rows: Rows = [
+        [("✅ Yes, remove", f"rmadminok:{uid}"), ("◀️ No, back", "nav:admins")]
+    ]
+    return title, rows
+
+
 def build_menu(menu_id: str) -> Tuple[str, Rows]:
     """Return ``(title_html, rows)`` for a navigation target."""
     if menu_id == "model":
@@ -191,6 +243,8 @@ def build_menu(menu_id: str) -> Tuple[str, Rows]:
         return _log_menu()
     if menu_id == "rmch":
         return _rmch_menu()
+    if menu_id == "admins":
+        return _admins_menu()
     # Default / "settings".
     return _settings_menu()
 
@@ -253,6 +307,16 @@ def handle_callback(
         alert = "Removed" if text.startswith("✅") else "Error"
         return CallbackResult(text, [list(_BACK_TO_SETTINGS)], alert)
 
+    if head == "rmadmin" and len(parts) >= 2:
+        title, rows = _admin_confirm(parts[1])
+        return CallbackResult(title, rows)
+
+    if head == "rmadminok" and len(parts) >= 2:
+        ok, msg = admin_store.remove_admin(parts[1])
+        text = ("✅ " if ok else "❌ ") + html.escape(msg)
+        alert = "Removed" if ok else "Error"
+        return CallbackResult(text, [list(_BACK_TO_SETTINGS)], alert)
+
     return _fallback()
 
 
@@ -281,12 +345,61 @@ def to_reply_markup(spec: List[List[str]]):
     )
 
 
+def build_add_admin_keyboard():
+    """Temporary reply keyboard whose first button opens Telegram's user picker.
+
+    Selecting a user makes Telegram send a ``users_shared`` service message
+    (handled in ``admin_commands``); the second button cancels and restores the
+    main menu (its label maps to ``/menu`` via ``BUTTON_COMMANDS``).
+    """
+    from pyrogram.types import (
+        KeyboardButton,
+        KeyboardButtonRequestUsers,
+        ReplyKeyboardMarkup,
+    )
+
+    return ReplyKeyboardMarkup(
+        [
+            [
+                KeyboardButton(
+                    "👤 Pick a user…",
+                    request_users=KeyboardButtonRequestUsers(
+                        button_id=ADD_ADMIN_BUTTON_ID,
+                        max_quantity=1,
+                        request_name=True,
+                        request_username=True,
+                    ),
+                )
+            ],
+            [KeyboardButton("🔙 Back to menu")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
 def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
     """Register the admin-gated ``on_callback_query`` handler on ``pyro``."""
     from pyrogram.errors import MessageNotModified
 
     @pyro.on_callback_query(admin_commands._admin_filter())
     async def _on_callback(client, cq):  # noqa: ANN001
+        # The user picker needs a *reply* keyboard, which can't be attached to an
+        # edited inline message — so send a fresh message instead of editing.
+        if (cq.data or "") == "admin:add":
+            try:
+                await cq.answer()
+            except Exception:
+                pass
+            try:
+                await cq.message.reply_text(
+                    ADD_ADMIN_PROMPT,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=build_add_admin_keyboard(),
+                )
+            except Exception:
+                log.exception("failed to start add-admin flow")
+            return
         try:
             result = handle_callback(
                 cq.data or "",

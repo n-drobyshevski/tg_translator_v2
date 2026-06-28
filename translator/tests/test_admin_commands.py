@@ -1,10 +1,12 @@
 """Tests for the admin DM command dispatcher (handle_command)."""
 
+import types
+
 import pytest
 
 import translator.config as config
 from translator.config import CONFIG
-from translator.services import admin_commands, env_store
+from translator.services import admin_commands, admin_store, env_store
 
 
 class Msg:
@@ -24,6 +26,10 @@ class _Reply:
 def admin_env(tmp_path, monkeypatch):
     # Route .env writes to a temp file.
     monkeypatch.setattr(env_store, "_root_env_path", lambda: tmp_path / ".env")
+    # Keep admin labels in a temp file and avoid real getChat network calls.
+    monkeypatch.setattr(admin_store, "_labels_path", lambda: tmp_path / "labels.json")
+    monkeypatch.setattr(admin_store, "resolve_name", lambda uid: None)
+    admin_store._name_cache.clear()
     # Required config env.
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
@@ -127,6 +133,110 @@ async def test_add_channel_duplicate_rejected(admin_env):
 async def test_remove_protected_rejected(admin_env):
     out = await admin_commands.handle_command(Msg("/removechannel test"))
     assert "protected" in out
+
+
+async def test_admins_lists(admin_env):
+    out = await admin_commands.handle_command(Msg("/admins"))
+    assert "Admins" in out
+    assert "111" in out and "222" in out
+
+
+async def test_addadmin_command(admin_env):
+    out = await admin_commands.handle_command(Msg("/addadmin 333 Alice"))
+    assert out.startswith("✅")
+    assert CONFIG.ADMIN_CHAT_IDS == [111, 222, 333]
+    assert admin_store.get_labels() == {"333": "Alice"}
+
+
+async def test_addadmin_rejects_bad_id(admin_env):
+    out = await admin_commands.handle_command(Msg("/addadmin notanid"))
+    assert out.startswith("❌")
+    assert CONFIG.ADMIN_CHAT_IDS == [111, 222]
+
+
+class _FakePyro:
+    """Stand-in for the Pyrogram client's async get_users."""
+
+    def __init__(self, user=None, exc=None):
+        self._user = user
+        self._exc = exc
+
+    async def get_users(self, uname):
+        if self._exc is not None:
+            raise self._exc
+        return self._user
+
+
+def test_add_shared_users_name_label(admin_env):
+    users = [
+        types.SimpleNamespace(id=501, first_name="Bob", last_name="Lee", username="boblee")
+    ]
+    out = admin_commands._add_shared_users(users)
+    assert out.startswith("✅")
+    assert 501 in CONFIG.ADMIN_CHAT_IDS
+    assert admin_store.get_labels()["501"] == "Bob Lee"
+
+
+def test_add_shared_users_username_fallback(admin_env):
+    users = [
+        types.SimpleNamespace(id=502, first_name=None, last_name=None, username="onlyuser")
+    ]
+    admin_commands._add_shared_users(users)
+    assert admin_store.get_labels()["502"] == "@onlyuser"
+
+
+def test_add_shared_users_empty(admin_env):
+    assert admin_commands._add_shared_users([]).startswith("❌")
+
+
+async def test_addadmin_username_resolves(admin_env):
+    user = types.SimpleNamespace(
+        id=777, first_name="Alice", last_name=None, username="alice"
+    )
+    out = await admin_commands.handle_command(
+        Msg("/addadmin @alice"), pyro=_FakePyro(user=user)
+    )
+    assert out.startswith("✅")
+    assert 777 in CONFIG.ADMIN_CHAT_IDS
+    assert admin_store.get_labels()["777"] == "Alice"
+
+
+async def test_addadmin_username_explicit_label_wins(admin_env):
+    user = types.SimpleNamespace(
+        id=778, first_name="Alice", last_name=None, username="alice"
+    )
+    await admin_commands.handle_command(
+        Msg("/addadmin @alice Chief Editor"), pyro=_FakePyro(user=user)
+    )
+    assert admin_store.get_labels()["778"] == "Chief Editor"
+
+
+async def test_addadmin_username_unresolvable(admin_env):
+    out = await admin_commands.handle_command(
+        Msg("/addadmin @ghost"), pyro=_FakePyro(exc=RuntimeError("USERNAME_NOT_OCCUPIED"))
+    )
+    assert out.startswith("❌")
+    assert CONFIG.ADMIN_CHAT_IDS == [111, 222]
+
+
+async def test_addadmin_username_without_pyro(admin_env):
+    out = await admin_commands.handle_command(Msg("/addadmin @alice"))
+    assert out.startswith("❌")
+    assert CONFIG.ADMIN_CHAT_IDS == [111, 222]
+
+
+async def test_removeadmin_command(admin_env):
+    out = await admin_commands.handle_command(Msg("/removeadmin 222"))
+    assert out.startswith("✅")
+    assert CONFIG.ADMIN_CHAT_IDS == [111]
+
+
+async def test_removeadmin_last_blocked(admin_env, monkeypatch):
+    monkeypatch.setenv("ADMIN_CHAT_ID", "111")
+    CONFIG.reload()
+    out = await admin_commands.handle_command(Msg("/removeadmin 111"))
+    assert out.startswith("❌") and "last admin" in out
+    assert CONFIG.ADMIN_CHAT_IDS == [111]
 
 
 async def test_unknown_command(admin_env):

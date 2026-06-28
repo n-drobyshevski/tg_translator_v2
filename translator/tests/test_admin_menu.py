@@ -3,13 +3,17 @@
 import pytest
 
 from translator.config import CONFIG
-from translator.services import admin_menu, env_store
+from translator.services import admin_menu, admin_store, env_store
 
 
 @pytest.fixture
 def admin_env(tmp_path, monkeypatch):
     # Route .env writes to a temp file.
     monkeypatch.setattr(env_store, "_root_env_path", lambda: tmp_path / ".env")
+    # Keep admin labels in a temp file and avoid real getChat network calls.
+    monkeypatch.setattr(admin_store, "_labels_path", lambda: tmp_path / "labels.json")
+    monkeypatch.setattr(admin_store, "resolve_name", lambda uid: None)
+    admin_store._name_cache.clear()
     # Required config env.
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
@@ -127,6 +131,62 @@ def test_rmchok_removes_channel(admin_env):
     res = admin_menu.handle_callback("rmchok:shaltnotkill")
     assert res.alert == "Removed"
     assert "shaltnotkill" not in admin_menu.admin_commands._logical_names()
+
+
+def test_admins_button_on_reply_keyboard():
+    labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
+    assert "👤 Admins" in labels
+    assert admin_menu.resolve_button_label("👤 Admins") == "/admins"
+
+
+def test_settings_has_admins_entry(admin_env):
+    res = admin_menu.handle_callback("nav:settings")
+    assert "nav:admins" in _flat_data(res.rows)
+
+
+def test_admins_menu_lists_with_remove_buttons(admin_env):
+    res = admin_menu.handle_callback("nav:admins")
+    data = _flat_data(res.rows)
+    assert "rmadmin:111" in data
+    assert "rmadmin:222" in data
+    assert "admin:add" in data  # add-admin button
+    assert "nav:settings" in data  # back button
+
+
+def test_back_to_menu_label_maps_to_menu():
+    assert admin_menu.resolve_button_label("🔙 Back to menu") == "/menu"
+
+
+def test_build_add_admin_keyboard_has_request_users():
+    kb = admin_menu.build_add_admin_keyboard()
+    btn = kb.keyboard[0][0]
+    req = btn.request_users
+    assert req is not None
+    assert req.button_id == admin_menu.ADD_ADMIN_BUTTON_ID
+    assert req.request_name and req.request_username
+    # Second row is the cancel/restore button.
+    assert kb.keyboard[1][0].text == "🔙 Back to menu"
+
+
+def test_rmadmin_shows_confirm(admin_env):
+    res = admin_menu.handle_callback("rmadmin:222")
+    data = _flat_data(res.rows)
+    assert "rmadminok:222" in data
+    assert "nav:admins" in data  # the "no, back" button
+
+
+def test_rmadminok_removes_admin(admin_env):
+    res = admin_menu.handle_callback("rmadminok:222")
+    assert res.alert == "Removed"
+    assert CONFIG.ADMIN_CHAT_IDS == [111]
+
+
+def test_rmadminok_last_admin_blocked(admin_env, monkeypatch):
+    monkeypatch.setenv("ADMIN_CHAT_ID", "111")
+    CONFIG.reload()
+    res = admin_menu.handle_callback("rmadminok:111")
+    assert res.alert == "Error"
+    assert CONFIG.ADMIN_CHAT_IDS == [111]
 
 
 def test_unknown_callback_falls_back(admin_env):

@@ -28,7 +28,7 @@ from typing import List, Optional
 from pyrogram import enums, filters
 
 from translator.config import CONFIG, PROMPT_TEMPLATE_PATH
-from translator.services import env_store
+from translator.services import admin_store, env_store
 from translator.utils.prompt_validation import validate_prompt
 from translator.utils.translation_utils import reload_prompt_template
 
@@ -83,6 +83,9 @@ HELP_TEXT = (
     "/addchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt; [src_name] [dst_name]\n"
     "/editchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt;\n"
     "/removechannel &lt;name&gt;\n"
+    "/admins — list admins\n"
+    "/addadmin &lt;user_id|@username&gt; [label]\n"
+    "/removeadmin &lt;user_id&gt;\n"
     "/reload — re-read .env + prompt template\n"
     "(/setprompt, /addchannel, /editchannel need typed input)"
 )
@@ -348,6 +351,87 @@ def _cmd_removechannel(args: List[str]) -> str:
     return f"✅ Removed channel '{html.escape(name)}'"
 
 
+def _cmd_admins() -> str:
+    lines = ["<b>Admins</b>"]
+    admins = admin_store.list_admins()
+    for a in admins:
+        if a["label"]:
+            lines.append(f"{html.escape(a['label'])} (<code>{a['id']}</code>)")
+        elif a["resolved"]:
+            lines.append(f"{html.escape(a['resolved'])} (<code>{a['id']}</code>)")
+        else:
+            lines.append(f"<code>{a['id']}</code>")
+    if len(lines) == 1:
+        lines.append("(none)")
+    lines += [
+        "",
+        "Add: /addadmin &lt;user_id&gt; [label] · Remove: /removeadmin &lt;user_id&gt;",
+        "ℹ️ A name resolves only if that user has DM'd the bot.",
+    ]
+    return "\n".join(lines)
+
+
+def _derive_label(user) -> Optional[str]:
+    """Best human label for a resolved/shared user: real name, else @username."""
+    name = " ".join(
+        p
+        for p in (getattr(user, "first_name", None), getattr(user, "last_name", None))
+        if p
+    )
+    uname = getattr(user, "username", None)
+    return name or (f"@{uname}" if uname else None)
+
+
+def _add_shared_users(users) -> str:
+    """Add admins picked via the request_users keyboard (a list of User-likes)."""
+    if not users:
+        return "❌ No user received from the picker."
+    lines: List[str] = []
+    for u in users:
+        uid = getattr(u, "id", None)
+        if uid is None:
+            continue
+        ok, msg = admin_store.add_admin(str(uid), _derive_label(u))
+        lines.append(("✅ " if ok else "❌ ") + html.escape(msg))
+    return "\n".join(lines) if lines else "❌ No valid user received."
+
+
+async def _cmd_addadmin(args: List[str], pyro=None) -> str:
+    if not args:
+        return "❌ Usage: /addadmin &lt;user_id|@username&gt; [label]"
+    target = args[0].strip()
+    label = " ".join(args[1:]).strip() or None
+
+    # Numeric id (incl. negative) → add directly.
+    if target and target != "-" and target.lstrip("-").isdigit():
+        ok, msg = admin_store.add_admin(target, label)
+        return ("✅ " if ok else "❌ ") + html.escape(msg)
+
+    # Otherwise treat it as a username, resolved best-effort via the live client.
+    if pyro is None:
+        return "❌ Username lookup unavailable here — use a numeric user id."
+    uname = target.lstrip("@")
+    try:
+        user = await pyro.get_users(uname)
+    except Exception as exc:
+        return (
+            f"❌ Couldn't resolve {html.escape(target)} ({html.escape(str(exc))}). "
+            "The bot can only resolve users/usernames it can see."
+        )
+    uid = getattr(user, "id", None)
+    if uid is None:
+        return f"❌ Couldn't resolve {html.escape(target)}."
+    ok, msg = admin_store.add_admin(str(uid), label or _derive_label(user))
+    return ("✅ " if ok else "❌ ") + html.escape(msg)
+
+
+def _cmd_removeadmin(args: List[str]) -> str:
+    if len(args) != 1:
+        return "❌ Usage: /removeadmin &lt;user_id&gt;"
+    ok, msg = admin_store.remove_admin(args[0])
+    return ("✅ " if ok else "❌ ") + html.escape(msg)
+
+
 def _cmd_reload() -> str:
     err = _reload_or_error("reload")
     if err:
@@ -405,6 +489,12 @@ async def handle_command(
         return _cmd_editchannel(args)
     if cmd == "/removechannel":
         return _cmd_removechannel(args)
+    if cmd == "/admins":
+        return _cmd_admins()
+    if cmd == "/addadmin":
+        return await _cmd_addadmin(args, pyro=pyro)
+    if cmd == "/removeadmin":
+        return _cmd_removeadmin(args)
     if cmd == "/reload":
         return _cmd_reload()
     return f"❓ Unknown command {html.escape(cmd)}. Send /help."
@@ -442,6 +532,28 @@ def register_admin_handlers(
 
     @pyro.on_message(filters.private & _admin_filter())
     async def _dispatch(client, msg):  # noqa: ANN001
+        # A user picked via the "➕ Add admin" keyboard arrives as a service
+        # message (no text) carrying users_shared — handle it before the text path
+        # and restore the main keyboard.
+        shared = getattr(msg, "users_shared", None)
+        if shared is not None:
+            try:
+                reply = _add_shared_users(getattr(shared, "users", None) or [])
+            except Exception as exc:
+                log.exception("add admin via picker failed")
+                reply = f"❌ Error: {html.escape(str(exc))}"
+            try:
+                await msg.reply_text(
+                    _truncate(reply),
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=admin_menu.to_reply_markup(
+                        admin_menu.build_reply_keyboard()
+                    ),
+                )
+            except Exception:
+                log.exception("failed to send add-admin reply")
+            return
+
         text = (getattr(msg, "text", None) or "").strip()
         resolved = admin_menu.resolve_button_label(text) or text
         token = (
