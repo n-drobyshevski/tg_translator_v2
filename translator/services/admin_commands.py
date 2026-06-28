@@ -36,6 +36,7 @@ from translator.services import (
     env_store,
 )
 from translator.services.admin_i18n import t
+from translator.utils.error_format import humanize_text
 from translator.utils.prompt_validation import validate_prompt
 from translator.utils.translation_utils import reload_prompt_template
 
@@ -112,7 +113,9 @@ def _recent_failures(lang: str = "en", lookback_days: int = 7, limit: int = 5) -
     for m in reversed(fails[-limit:]):  # newest first (load_messages is oldest-first)
         ts = (m.get("timestamp") or "")[5:16].replace("T", " ")  # MM-DD HH:MM (UTC)
         chan = html.escape(str(m.get("source_channel_name") or "?"))
-        reason = html.escape(str(m.get("exception_message") or "")[:90])
+        # humanize_text cleans up legacy events whose exception_message is a raw
+        # SDK dump; it is idempotent on already-humanized (new) events.
+        reason = html.escape(humanize_text(str(m.get("exception_message") or ""))[:90])
         lines.append(t("status_fail_line", lang, time=ts, channel=chan, reason=reason))
     return "\n\n" + "\n".join(lines)
 

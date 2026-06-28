@@ -309,6 +309,34 @@ async def test_status_lists_recent_failures(admin_env, monkeypatch):
     assert "ok_chan" not in out
 
 
+async def test_status_humanizes_legacy_raw_error(admin_env, monkeypatch):
+    # Events recorded before humanize_error stored the raw SDK dump; /status must
+    # still render them cleanly (humanize_text at display time).
+    from translator.db import events_dao
+
+    raw = (
+        "Error code: 400 - {'type': 'error', 'error': {'type': "
+        "'invalid_request_error', 'message': 'Your credit balance is too low to "
+        "access the Anthropic API. Please go to Plans & Billing.'}, "
+        "'request_id': 'req_x'}"
+    )
+    monkeypatch.setattr(
+        events_dao,
+        "load_messages",
+        lambda since_iso=None, event_type=None: [
+            {
+                "posting_success": False,
+                "exception_message": raw,
+                "source_channel_name": "test_source",
+                "timestamp": "2026-06-28T20:12:00+00:00",
+            }
+        ],
+    )
+    out = await admin_commands.handle_command(Msg("/status"))
+    assert "Anthropic credits exhausted" in out
+    assert "Error code:" not in out  # the raw dump is no longer shown
+
+
 async def test_status_no_failures(admin_env, monkeypatch):
     from translator.db import events_dao
 
