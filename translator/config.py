@@ -54,6 +54,11 @@ class Config:
         self.ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
         self.ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "1500"))
         self.ANTHROPIC_TEMPERATURE = float(os.getenv("ANTHROPIC_TEMPERATURE", "0"))
+        # Optional org-level Admin API key (sk-ant-admin…) used only to fetch
+        # authoritative cost figures from the Admin Cost API for the cost view.
+        # Secret: never editable from the DM, never echoed in as_dict(). When
+        # unset the cost view falls back to the local token-based estimate.
+        self.ANTHROPIC_ADMIN_API_KEY = os.getenv("ANTHROPIC_ADMIN_API_KEY", "")
         self.SOURCE_TEST_ID = int(self._require("TEST_CHANNEL"))
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 

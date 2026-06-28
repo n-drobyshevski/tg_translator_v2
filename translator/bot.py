@@ -283,7 +283,10 @@ def register_handlers(
             recorder.get("dest_channel_name"),
         )
         try:
-            translated = await run_with_retries(translate_html, anthropic, payload)
+            usage: dict = {}
+            translated = await run_with_retries(
+                translate_html, anthropic, payload, usage
+            )
             translation_time = time.monotonic() - translation_start
             # pyro_log.info("Translated message: %s", translated)
             recorder.set(
@@ -292,6 +295,11 @@ def register_handlers(
                 translated_message=html.escape(translated),
                 translation_time=translation_time,
                 retry_count=retry_count,
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                cache_read_tokens=usage.get("cache_read_tokens", 0),
+                cache_creation_tokens=usage.get("cache_creation_tokens", 0),
+                model_used=usage.get("model_used", ""),
             )
             media_dispatch = {
                 "photo": sender.send_photo_message,
@@ -435,7 +443,17 @@ def register_handlers(
             )
 
             pyro_log.info("Translating edited message %s → %s...", msg.id, dest_id)
-            translated = await run_with_retries(translate_html, anthropic, payload)
+            usage: dict = {}
+            translated = await run_with_retries(
+                translate_html, anthropic, payload, usage
+            )
+            recorder.set(
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                cache_read_tokens=usage.get("cache_read_tokens", 0),
+                cache_creation_tokens=usage.get("cache_creation_tokens", 0),
+                model_used=usage.get("model_used", ""),
+            )
             pyro_log.info("Translated.")
 
             # Route the edit by how the post was originally delivered: media

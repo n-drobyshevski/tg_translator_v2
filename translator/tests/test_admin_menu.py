@@ -69,15 +69,68 @@ def test_nav_settings_returns_settings_rows(admin_env):
     res = admin_menu.handle_callback("nav:settings")
     assert res.rows is not None
     data = _flat_data(res.rows)
-    assert "nav:model" in data
+    assert "nav:ai" in data
+    assert "nav:model" not in data  # moved under AI Settings
     assert "nav:rmch" in data
     assert "nav:close" in data
 
 
-@pytest.mark.parametrize("target", ["model", "temp", "tokens", "log", "rmch"])
-def test_nav_submenus_have_back(admin_env, target):
+def test_nav_ai_lists_children(admin_env):
+    res = admin_menu.handle_callback("nav:ai")
+    data = _flat_data(res.rows)
+    for cd in ("nav:model", "nav:temp", "nav:tokens", "nav:prompt", "nav:cost"):
+        assert cd in data
+    assert "nav:settings" in data  # back to Settings
+
+
+def test_nav_prompt_menu_back_to_ai(admin_env):
+    res = admin_menu.handle_callback("nav:prompt")
+    assert res.rows is not None
+    assert "nav:ai" in _flat_data(res.rows)
+    # The view points the operator at /setprompt to edit it.
+    assert "/setprompt" in res.text
+
+
+def test_prompt_removed_from_reply_keyboard():
+    labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
+    assert admin_i18n.t("btn_prompt") not in labels
+    # Still resolvable for back-compat (cached keyboards / typed flows).
+    assert admin_menu.resolve_button_label(admin_i18n.t("btn_prompt")) == "/prompt"
+
+
+# AI configs now hang off the AI Settings submenu, so they go back to nav:ai;
+# log / rmch / the AI menu itself go back to nav:settings.
+@pytest.mark.parametrize("target", ["model", "temp", "tokens"])
+def test_ai_submenus_back_to_ai(admin_env, target):
     res = admin_menu.handle_callback(f"nav:{target}")
     assert res.rows is not None
+    assert "nav:ai" in _flat_data(res.rows)
+
+
+@pytest.mark.parametrize("target", ["log", "rmch", "ai"])
+def test_settings_submenus_back_to_settings(admin_env, target):
+    res = admin_menu.handle_callback(f"nav:{target}")
+    assert res.rows is not None
+    assert "nav:settings" in _flat_data(res.rows)
+
+
+def test_nav_cost_menu(admin_env, monkeypatch):
+    # Isolate from the real event DB / network — only the menu wiring is under test.
+    monkeypatch.setattr(admin_menu.cost_report, "render", lambda lang="en": "REPORT")
+    res = admin_menu.handle_callback("nav:cost")
+    assert res.text == "REPORT"
+    data = _flat_data(res.rows)
+    assert "nav:cost" in data  # refresh
+    assert "nav:ai" in data  # back to AI Settings
+
+
+def test_set_model_back_to_ai(admin_env):
+    res = admin_menu.handle_callback("set:model:claude-sonnet-4-6")
+    assert "nav:ai" in _flat_data(res.rows)
+
+
+def test_set_log_back_to_settings(admin_env):
+    res = admin_menu.handle_callback("set:log:INFO")
     assert "nav:settings" in _flat_data(res.rows)
 
 

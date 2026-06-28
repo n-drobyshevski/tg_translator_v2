@@ -68,8 +68,11 @@ directly. Other required vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID`,
 "protected" — the DM `/removechannel` refuses it because `TEST_CHANNEL` is
 required independently of `LOGICAL_CHANNELS`). Optional: `ADMIN_CHAT_ID` (admin
 Telegram user id(s), comma/semicolon-separated → `CONFIG.ADMIN_CHAT_IDS`; gates
-DM commands and receives error alerts). Admin app also reads `ADMIN_PASSWORD`,
-`SECRET_KEY`.
+DM commands and receives error alerts) and `ANTHROPIC_ADMIN_API_KEY` (an
+org-level Admin key `sk-ant-admin…`, used **only** by the DM "AI Settings → Cost"
+view to fetch authoritative month-to-date cost from Anthropic's Admin Cost API;
+when unset the view falls back to a local token-based estimate). Admin app also
+reads `ADMIN_PASSWORD`, `SECRET_KEY`.
 
 > **`CHANNEL_CONFIGS` is captured by value** by `TelegramSender` at construction
 > (`self.configs = CHANNEL_CONFIGS`), so `Config.reload()` mutates that dict

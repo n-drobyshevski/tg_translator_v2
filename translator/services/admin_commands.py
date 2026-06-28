@@ -134,6 +134,13 @@ def _cmd_stats(args: List[str], lang: str = "en") -> str:
     return "\n".join(lines)
 
 
+def _cmd_cost(args: List[str], lang: str = "en") -> str:
+    """Cost / billing report (typed-command parity with the menu Cost view)."""
+    from translator.services import cost_report
+
+    return cost_report.render(lang)
+
+
 def _config_summary(lang: str = "en") -> str:
     """Current non-secret settings as value lines (no header).
 
@@ -473,6 +480,8 @@ async def handle_command(
         return _cmd_status(start_ts, query_queue, pyro, lang)
     if cmd == "/stats":
         return _cmd_stats(args, lang)
+    if cmd == "/cost":
+        return _cmd_cost(args, lang)
     if cmd == "/channels":
         return _cmd_channels(lang)
     if cmd == "/prompt":

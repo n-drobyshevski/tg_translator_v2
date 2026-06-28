@@ -38,6 +38,7 @@ from translator.services import (
     admin_prefs,
     admin_store,
     admin_wizard,
+    cost_report,
 )
 from translator.services.admin_i18n import t
 
@@ -85,12 +86,16 @@ def resolve_button_label(text: Optional[str]) -> Optional[str]:
 
 
 def build_reply_keyboard(lang: str = "en") -> List[List[str]]:
-    """Spec for the persistent reply keyboard (rows of plain labels)."""
+    """Spec for the persistent reply keyboard (rows of plain labels).
+
+    The prompt template now lives under 🛠️ Settings → 🤖 AI Settings → 📝 Prompt
+    (it's an AI config), so it's no longer a top-level reply-keyboard button.
+    """
     return [
         [t("btn_status", lang), t("btn_stats", lang)],
         [t("btn_channels", lang), t("btn_admins", lang)],
-        [t("btn_prompt", lang), t("btn_reload", lang)],
-        [t("btn_help", lang), t("btn_settings", lang)],
+        [t("btn_reload", lang), t("btn_help", lang)],
+        [t("btn_settings", lang)],
     ]
 
 
@@ -109,6 +114,10 @@ def _back_to_settings(lang: str = "en") -> Row:
     return [(t("btn_back", lang), "nav:settings")]
 
 
+def _back_to_ai(lang: str = "en") -> Row:
+    return [(t("btn_back", lang), "nav:ai")]
+
+
 # Identifier echoed back in ``users_shared.button_id`` for the add-admin picker.
 ADD_ADMIN_BUTTON_ID = 1
 
@@ -125,11 +134,7 @@ class CallbackResult:
 def _settings_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = t("settings_title", lang, summary=admin_commands._config_summary(lang))
     rows: Rows = [
-        [(t("settings_btn_model", lang), "nav:model")],
-        [
-            (t("settings_btn_temp", lang), "nav:temp"),
-            (t("settings_btn_tokens", lang), "nav:tokens"),
-        ],
+        [(t("settings_btn_ai", lang), "nav:ai")],
         [(t("settings_btn_log", lang), "nav:log")],
         [(t("settings_btn_rmch", lang), "nav:rmch")],
         [(t("btn_admins", lang), "nav:admins")],
@@ -139,10 +144,53 @@ def _settings_menu(lang: str = "en") -> Tuple[str, Rows]:
     return title, rows
 
 
+def _ai_menu(lang: str = "en") -> Tuple[str, Rows]:
+    """The dedicated AI Settings submenu: model / temperature / max-tokens / cost."""
+    title = t(
+        "ai_title",
+        lang,
+        model=html.escape(str(CONFIG.ANTHROPIC_MODEL)),
+        temp=CONFIG.ANTHROPIC_TEMPERATURE,
+        tokens=CONFIG.ANTHROPIC_MAX_TOKENS,
+    )
+    rows: Rows = [
+        [(t("settings_btn_model", lang), "nav:model")],
+        [
+            (t("settings_btn_temp", lang), "nav:temp"),
+            (t("settings_btn_tokens", lang), "nav:tokens"),
+        ],
+        [(t("btn_prompt", lang), "nav:prompt")],
+        [(t("settings_btn_cost", lang), "nav:cost")],
+        _back_to_settings(lang),
+    ]
+    return title, rows
+
+
+def _prompt_menu(lang: str = "en") -> Tuple[str, Rows]:
+    """Read-only view of the current prompt template + how to change it.
+
+    Editing needs multi-line typed input, which inline buttons can't capture, so
+    this shows the template (via the shared ``/prompt`` handler) and points at
+    ``/setprompt``."""
+    title = admin_commands._cmd_prompt(lang) + t("prompt_menu_hint", lang)
+    rows: Rows = [_back_to_ai(lang)]
+    return title, rows
+
+
+def _cost_menu(lang: str = "en") -> Tuple[str, Rows]:
+    """Cost / billing view. Body comes from cost_report (local + optional admin API)."""
+    title = cost_report.render(lang)
+    rows: Rows = [
+        [(t("btn_cost_refresh", lang), "nav:cost")],
+        _back_to_ai(lang),
+    ]
+    return title, rows
+
+
 def _model_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = t("model_title", lang, current=CONFIG.ANTHROPIC_MODEL)
     rows: Rows = [[(label, f"set:model:{value}")] for label, value in MODEL_PRESETS]
-    rows.append(_back_to_settings(lang))
+    rows.append(_back_to_ai(lang))
     return title, rows
 
 
@@ -150,7 +198,7 @@ def _temp_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = t("temp_title", lang, current=CONFIG.ANTHROPIC_TEMPERATURE)
     rows: Rows = [
         [(v, f"set:temp:{v}") for v in TEMP_PRESETS],
-        _back_to_settings(lang),
+        _back_to_ai(lang),
     ]
     return title, rows
 
@@ -159,7 +207,7 @@ def _tokens_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = t("tokens_title", lang, current=CONFIG.ANTHROPIC_MAX_TOKENS)
     rows: Rows = [
         [(v, f"set:tokens:{v}") for v in TOKEN_PRESETS],
-        _back_to_settings(lang),
+        _back_to_ai(lang),
     ]
     return title, rows
 
@@ -252,6 +300,12 @@ def _admin_confirm(uid: str, lang: str = "en") -> Tuple[str, Rows]:
 
 def build_menu(menu_id: str, lang: str = "en") -> Tuple[str, Rows]:
     """Return ``(title_html, rows)`` for a navigation target."""
+    if menu_id == "ai":
+        return _ai_menu(lang)
+    if menu_id == "prompt":
+        return _prompt_menu(lang)
+    if menu_id == "cost":
+        return _cost_menu(lang)
     if menu_id == "model":
         return _model_menu(lang)
     if menu_id == "temp":
@@ -339,7 +393,9 @@ def handle_callback(
             return _fallback(lang)
         text = fn([value], lang)
         alert = t("alert_saved", lang) if text.startswith("✅") else t("alert_error", lang)
-        return CallbackResult(text, [_back_to_settings(lang)], alert)
+        # model/temp/tokens now live under AI Settings; log stays in Settings.
+        back = _back_to_settings(lang) if kind == "log" else _back_to_ai(lang)
+        return CallbackResult(text, [back], alert)
 
     if head == "rmch" and len(parts) >= 2:
         title, rows = _rmch_confirm(parts[1], lang)

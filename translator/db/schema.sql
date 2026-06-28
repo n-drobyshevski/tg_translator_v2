@@ -25,7 +25,14 @@ CREATE TABLE IF NOT EXISTS events (
     source_message      TEXT    NOT NULL DEFAULT '',
     translated_message  TEXT    NOT NULL DEFAULT '',
     dest_message_id     TEXT    NOT NULL DEFAULT '',
-    file_path           TEXT    NOT NULL DEFAULT ''
+    file_path           TEXT    NOT NULL DEFAULT '',
+    -- Anthropic token usage + model, for cost reporting (added in schema v2).
+    -- Existing DBs gain these via connection._ensure_columns (idempotent ALTER).
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    model_used            TEXT    NOT NULL DEFAULT ''
 );
 
 -- Core edit lookup: (source_channel_id, message_id) newest-first, only rows that
@@ -41,3 +48,6 @@ CREATE INDEX IF NOT EXISTS idx_events_chan_ts  ON events (source_channel_name, t
 
 CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
+-- v2 added the token/cost columns above; bump the recorded version (no-op on
+-- fresh DBs where it was just inserted as '1', so force it forward).
+UPDATE schema_meta SET value = '2' WHERE key = 'version' AND value = '1';

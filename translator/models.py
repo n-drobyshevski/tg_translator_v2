@@ -48,7 +48,16 @@ class MessageEvent:
     source_message: str = ""
     translated_message: str = ""
     dest_message_id: str = ""
-    file_path: str = ""  
+    file_path: str = ""
+    # Anthropic token usage for this translation (used for cost reporting).
+    # model_used is the model that actually produced the text — recorded per
+    # event because CONFIG.ANTHROPIC_MODEL can change over time, and cost must
+    # be priced against the model in effect when the message was translated.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    model_used: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict, keeping all fields (even if empty or zero)."""

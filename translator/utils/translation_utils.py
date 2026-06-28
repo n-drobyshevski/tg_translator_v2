@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 from anthropic import Anthropic, AsyncAnthropic
 import logging
 import re
@@ -53,7 +53,9 @@ def build_messages(html_text: str) -> Tuple[str, str]:
 
 
 async def translate_html(
-    client: Union[Anthropic, AsyncAnthropic], payload: Dict[str, Any]
+    client: Union[Anthropic, AsyncAnthropic],
+    payload: Dict[str, Any],
+    usage_out: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Send payload to Anthropic and return translated text.
 
@@ -74,6 +76,10 @@ async def translate_html(
     tokens, so at the current template size (~hundreds of tokens) caching is a
     no-op — the structural win (instructions in the system role) applies now, and
     caching engages automatically if the template later grows past the minimum.
+
+    If ``usage_out`` (a dict) is given, it is populated with the response's token
+    usage and the model that produced it, for cost reporting. The return value is
+    unchanged (the translated text), so existing two-arg callers are unaffected.
     """
     system_prompt, user_text = build_messages(payload["Html"])
     create = client.messages.create
@@ -103,6 +109,15 @@ async def translate_html(
             "Anthropic returned no usable content "
             f"(stop_reason={getattr(resp, 'stop_reason', None)})"
         )
+    if usage_out is not None:
+        u = getattr(resp, "usage", None)
+        usage_out["input_tokens"] = getattr(u, "input_tokens", 0) or 0
+        usage_out["output_tokens"] = getattr(u, "output_tokens", 0) or 0
+        usage_out["cache_read_tokens"] = getattr(u, "cache_read_input_tokens", 0) or 0
+        usage_out["cache_creation_tokens"] = (
+            getattr(u, "cache_creation_input_tokens", 0) or 0
+        )
+        usage_out["model_used"] = getattr(resp, "model", "") or CONFIG.ANTHROPIC_MODEL
     # strip out non-HTML tags like <translation>, <example>, <source>, <user>, <instructions>, <system>
     raw = resp.content[0].text
     cleaned = re.sub(r"</?(?:translation|example|source|user|instructions|system)>", "", raw)

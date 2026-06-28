@@ -69,25 +69,70 @@ _EN: Dict[str, str] = {
     ),
     # Inline Settings tree.
     "settings_title": "<b>⚙️ Settings</b>\n\n{summary}\n\nPick a setting to change.",
+    "settings_btn_ai": "🤖 AI Settings",
     "settings_btn_model": "🤖 Set Model",
     "settings_btn_temp": "🌡️ Temperature",
     "settings_btn_tokens": "🔢 Max Tokens",
+    "settings_btn_cost": "💰 Cost & billing",
     "settings_btn_log": "🪵 Log Level",
     "settings_btn_rmch": "🗑️ Remove Channel",
     "settings_btn_close": "✖️ Close",
+    # AI Settings submenu (model / temperature / max-tokens / cost).
+    "ai_title": (
+        "<b>🤖 AI Settings</b>\n"
+        "Model: {model}\n"
+        "Temperature: {temp}\n"
+        "Max tokens: {tokens}\n\n"
+        "Tune the translation model and review cost below."
+    ),
     "model_title": (
         "<b>🤖 Model</b>\n"
-        "Current: {current}\n"
+        "Current: {current}\n\n"
+        "Capability vs. price (USD per 1M tokens, input / output):\n"
+        "• Haiku 4.5 — $1 / $5 — fastest &amp; cheapest (default)\n"
+        "• Sonnet 4.6 — $3 / $15 — balanced\n"
+        "• Opus 4.8 — $5 / $25 — most capable, priciest\n"
+        "Each post bills input (source + prompt) + output (translation) tokens, "
+        "so a higher tier costs several× more per post.\n"
         "Pick a preset, or type <code>/setmodel &lt;id&gt;</code> for any other."
     ),
     "temp_title": (
         "<b>🌡️ Temperature</b>\n"
-        "Current: {current}\nPick a value (0 = literal)."
+        "Current: {current}\n\n"
+        "Controls randomness in word choice:\n"
+        "• 0 — deterministic &amp; literal. Best for faithful translation — same "
+        "input gives the same output, least drift from the source.\n"
+        "• 0.3–0.7 — light variation; more natural phrasing but may stray.\n"
+        "• 1.0 — most creative/varied; highest risk of rewording or drift.\n"
+        "💲 Cost: none — temperature changes wording, not token usage or price.\n"
+        "Pick a value, or type <code>/settemp &lt;0..1&gt;</code>."
     ),
     "tokens_title": (
         "<b>🔢 Max Tokens</b>\n"
-        "Current: {current}\nPick a value."
+        "Current: {current}\n\n"
+        "Hard ceiling on the <b>output</b> length of one translation "
+        "(≈ ¾ of a word per token):\n"
+        "• Too low → long posts get cut off mid-sentence.\n"
+        "• Higher → no downside; it's a cap, not a reservation.\n"
+        "💲 Cost: you pay only for output tokens actually generated, at the "
+        "model's output rate — so set it a little above your longest post, not "
+        "arbitrarily high.\n"
+        "Pick a value, or type <code>/setmaxtokens &lt;1..8192&gt;</code>."
     ),
+    # Cost / billing view (rendered by services/cost_report.render).
+    "cost_title": "<b>💰 Cost &amp; billing</b>",
+    "cost_mtd_admin": "Month-to-date ({month}): <b>${amount}</b> (Anthropic billing)",
+    "cost_mtd_local": "Month-to-date ({month}): <b>~${amount}</b> (local estimate)",
+    "cost_billing_next": "Next invoice: ~{date} (API usage is billed monthly)",
+    "cost_breakdown_header": "<b>By model (this month)</b>",
+    "cost_model_row": "{model}: {in_tok} in / {out_tok} out → ~${cost}",
+    "cost_none": "(no token usage recorded yet this month)",
+    "cost_caveat": (
+        "ℹ️ Local estimates price recorded token usage and cover only posts "
+        "translated since cost tracking was enabled. The Anthropic figure, when "
+        "shown, is authoritative."
+    ),
+    "btn_cost_refresh": "🔄 Refresh",
     "log_title": (
         "<b>🪵 Log Level</b>\n"
         "Current: {current}\nPick a level."
@@ -124,6 +169,7 @@ _EN: Dict[str, str] = {
         "/help — this message\n"
         "/status — uptime, channels, queue depth\n"
         "/stats [days] — relay counts &amp; failures (default 7)\n"
+        "/cost — token usage, estimated cost &amp; next invoice\n"
         "/channels — configured channel pairs\n"
         "/prompt — current prompt template\n"
         "/setmodel &lt;model&gt;\n"
@@ -175,6 +221,10 @@ _EN: Dict[str, str] = {
     # /prompt.
     "prompt_none": "(no prompt template file)",
     "prompt_body": "<b>Prompt template</b>\n<pre>{body}</pre>",
+    "prompt_menu_hint": (
+        "\n\nTo change it, send <code>/setprompt</code> followed by the new "
+        "template on new lines, or reply to a message containing it."
+    ),
     # /setmodel.
     "setmodel_usage": "❌ Usage: /setmodel &lt;model&gt;",
     "setmodel_ok": "✅ ANTHROPIC_MODEL = {model}",
@@ -293,25 +343,70 @@ _BE: Dict[str, str] = {
     ),
     # Inline Settings tree.
     "settings_title": "<b>⚙️ Налады</b>\n\n{summary}\n\nВыберыце налада для змены.",
+    "settings_btn_ai": "🤖 Налады ІІ",
     "settings_btn_model": "🤖 Задаць мадэль",
     "settings_btn_temp": "🌡️ Тэмпература",
     "settings_btn_tokens": "🔢 Макс. токенаў",
+    "settings_btn_cost": "💰 Кошт і білінг",
     "settings_btn_log": "🪵 Узровень логаў",
     "settings_btn_rmch": "🗑️ Выдаліць канал",
     "settings_btn_close": "✖️ Закрыць",
+    # AI Settings submenu.
+    "ai_title": (
+        "<b>🤖 Налады ІІ</b>\n"
+        "Мадэль: {model}\n"
+        "Тэмпература: {temp}\n"
+        "Макс. токенаў: {tokens}\n\n"
+        "Наладзьце мадэль перакладу і прагледзьце кошт ніжэй."
+    ),
     "model_title": (
         "<b>🤖 Мадэль</b>\n"
-        "Бягучая: {current}\n"
+        "Бягучая: {current}\n\n"
+        "Магчымасці і цана (USD за 1М токенаў, увод / вывад):\n"
+        "• Haiku 4.5 — $1 / $5 — найхутчэйшая і таннейшая (па змаўчанні)\n"
+        "• Sonnet 4.6 — $3 / $15 — збалансаваная\n"
+        "• Opus 4.8 — $5 / $25 — найбольш магутная, найдаражэйшая\n"
+        "Кожны пост білінгуецца за токены ўводу (крыніца + промпт) + вываду "
+        "(пераклад), таму вышэйшы клас каштуе ў некалькі разоў больш за пост.\n"
         "Выберыце прэсет або ўвядзіце <code>/setmodel &lt;id&gt;</code> для іншай."
     ),
     "temp_title": (
         "<b>🌡️ Тэмпература</b>\n"
-        "Бягучая: {current}\nВыберыце значэнне (0 = літаральна)."
+        "Бягучая: {current}\n\n"
+        "Кіруе выпадковасцю ў выбары слоў:\n"
+        "• 0 — дэтэрмінавана і літаральна. Найлепш для дакладнага перакладу — "
+        "аднолькавы ўвод дае аднолькавы вывад, найменшае адхіленне ад крыніцы.\n"
+        "• 0.3–0.7 — лёгкая варыяцыя; больш натуральна, але можа адхіляцца.\n"
+        "• 1.0 — найбольш творча/зменліва; найвышэйшая рызыка адхілення.\n"
+        "💲 Кошт: няма — тэмпература змяняе фармулёўку, а не колькасць токенаў.\n"
+        "Выберыце значэнне або ўвядзіце <code>/settemp &lt;0..1&gt;</code>."
     ),
     "tokens_title": (
         "<b>🔢 Макс. токенаў</b>\n"
-        "Бягучае: {current}\nВыберыце значэнне."
+        "Бягучае: {current}\n\n"
+        "Жорсткая мяжа на даўжыню <b>вываду</b> аднаго перакладу "
+        "(≈ ¾ слова на токен):\n"
+        "• Занадта мала → доўгія пасты абразаюцца на сярэдзіне сказа.\n"
+        "• Больш → без мінусаў; гэта мяжа, а не рэзерв.\n"
+        "💲 Кошт: вы плаціце толькі за фактычна згенераваныя токены вываду па "
+        "стаўцы вываду мадэлі — стаўце крыху вышэй за самы доўгі пост, а не "
+        "адвольна шмат.\n"
+        "Выберыце значэнне або ўвядзіце <code>/setmaxtokens &lt;1..8192&gt;</code>."
     ),
+    # Cost / billing view.
+    "cost_title": "<b>💰 Кошт і білінг</b>",
+    "cost_mtd_admin": "З пачатку месяца ({month}): <b>${amount}</b> (білінг Anthropic)",
+    "cost_mtd_local": "З пачатку месяца ({month}): <b>~${amount}</b> (лакальная ацэнка)",
+    "cost_billing_next": "Наступны рахунак: ~{date} (API білінгуецца штомесяц)",
+    "cost_breakdown_header": "<b>Па мадэлях (гэты месяц)</b>",
+    "cost_model_row": "{model}: {in_tok} увод / {out_tok} вывад → ~${cost}",
+    "cost_none": "(пакуль няма выкарыстання токенаў у гэтым месяцы)",
+    "cost_caveat": (
+        "ℹ️ Лакальныя ацэнкі разлічваюць запісанае выкарыстанне токенаў і "
+        "ахопліваюць толькі пасты, перакладзеныя пасля ўключэння ўліку кошту. "
+        "Лічба Anthropic, калі паказана, дакладная."
+    ),
+    "btn_cost_refresh": "🔄 Абнавіць",
     "log_title": (
         "<b>🪵 Узровень логаў</b>\n"
         "Бягучы: {current}\nВыберыце ўзровень."
@@ -348,6 +443,7 @@ _BE: Dict[str, str] = {
         "/help — гэта паведамленне\n"
         "/status — час працы, каналы, чарга\n"
         "/stats [дні] — лік рэтрансляцый і збояў (па змаўчанні 7)\n"
+        "/cost — выкарыстанне токенаў, ацэнка кошту і наступны рахунак\n"
         "/channels — наладжаныя пары каналаў\n"
         "/prompt — бягучы шаблон промпта\n"
         "/setmodel &lt;model&gt;\n"
@@ -399,6 +495,10 @@ _BE: Dict[str, str] = {
     # /prompt.
     "prompt_none": "(няма файла шаблона промпта)",
     "prompt_body": "<b>Шаблон промпта</b>\n<pre>{body}</pre>",
+    "prompt_menu_hint": (
+        "\n\nКаб змяніць, дашліце <code>/setprompt</code> з новым шаблонам на "
+        "новых радках або адкажыце на паведамленне з ім."
+    ),
     # /setmodel.
     "setmodel_usage": "❌ Ужыванне: /setmodel &lt;model&gt;",
     "setmodel_ok": "✅ ANTHROPIC_MODEL = {model}",
