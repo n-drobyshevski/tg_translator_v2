@@ -93,11 +93,16 @@ def build_reply_keyboard(lang: str = "en") -> List[List[str]]:
     prompt template lives inside it (🤖 AI Settings → 📝 Prompt). 📡 Channels and
     👤 Admins are not top-level either — they now live under 🛠️ Settings (their
     labels stay resolvable via BUTTON_KEYS for typed/cached access).
+
+    🔄 Reload is intentionally absent: ``/reload`` has a narrow operator use case
+    (it only matters after an out-of-band ``.env`` edit, since the DM writers
+    already reload live), so it stays a typed-only command — still resolvable via
+    BUTTON_KEYS for typed flows / cached keyboards.
     """
     return [
         [t("btn_status", lang), t("btn_stats", lang)],
-        [t("btn_ai", lang), t("btn_reload", lang)],
-        [t("btn_help", lang), t("btn_settings", lang)],
+        [t("btn_ai", lang), t("btn_settings", lang)],
+        [t("btn_help", lang)],
     ]
 
 

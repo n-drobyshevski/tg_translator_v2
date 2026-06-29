@@ -215,6 +215,15 @@ def test_channels_removed_from_reply_keyboard():
     assert admin_menu.resolve_button_label(admin_i18n.t("btn_channels")) == "/channelsmenu"
 
 
+def test_reload_removed_from_reply_keyboard():
+    # /reload has a narrow use case (out-of-band .env edits only), so it's a
+    # typed-only command now; gone from the keyboard but still resolvable for
+    # back-compat (typed flows / cached keyboards).
+    labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
+    assert admin_i18n.t("btn_reload") not in labels
+    assert admin_menu.resolve_button_label(admin_i18n.t("btn_reload")) == "/reload"
+
+
 def test_settings_has_channels_entry(admin_env):
     res = admin_menu.handle_callback("nav:settings")
     assert "nav:channels" in _flat_data(res.rows)
