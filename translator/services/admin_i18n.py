@@ -199,6 +199,9 @@ _EN: Dict[str, str] = {
     "status_fail_header": "<b>Recent failures (last 7d) — {count}</b>",
     "status_fail_none": "<b>Recent failures</b>\nNone in the last 7 days ✅",
     "status_fail_line": "{time} UTC · {channel} · {reason}",
+    "status_succ_header": "<b>Recent successes (last 7d) — {count}</b>",
+    "status_succ_none": "<b>Recent successes</b>\nNone in the last 7 days",
+    "status_succ_line": "{time} UTC · {channel} · {media}",
     # /stats.
     "stats_usage": "❌ Usage: /stats [days]",
     "stats_days_range": "❌ days must be 1..30",
@@ -477,6 +480,9 @@ _BE: Dict[str, str] = {
     "status_fail_header": "<b>Нядаўнія збоі (апошнія 7д) — {count}</b>",
     "status_fail_none": "<b>Нядаўнія збоі</b>\nНяма за апошнія 7 дзён ✅",
     "status_fail_line": "{time} UTC · {channel} · {reason}",
+    "status_succ_header": "<b>Нядаўнія паспяховыя (апошнія 7д) — {count}</b>",
+    "status_succ_none": "<b>Нядаўнія паспяховыя</b>\nНяма за апошнія 7 дзён",
+    "status_succ_line": "{time} UTC · {channel} · {media}",
     # /stats.
     "stats_usage": "❌ Ужыванне: /stats [дні]",
     "stats_days_range": "❌ дні мусяць быць 1..30",

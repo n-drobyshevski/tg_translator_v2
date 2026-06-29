@@ -305,8 +305,41 @@ async def test_status_lists_recent_failures(admin_env, monkeypatch):
     assert "Recent failures" in out
     assert "test_source" in out
     assert "Anthropic credits exhausted" in out
-    # The successful event is not listed as a failure.
-    assert "ok_chan" not in out
+    # The successful event is surfaced under the successes section, not failures.
+    assert "Recent successes" in out
+    assert "ok_chan" in out
+
+
+async def test_status_lists_recent_successes(admin_env, monkeypatch):
+    from translator.db import events_dao
+
+    monkeypatch.setattr(
+        events_dao,
+        "load_messages",
+        lambda since_iso=None, event_type=None: [
+            {
+                "posting_success": True,
+                "exception_message": "",
+                "source_channel_name": "ok_chan",
+                "media_type": "photo",
+                "timestamp": "2026-06-28T10:00:00+00:00",
+            },
+            {
+                "posting_success": False,
+                "exception_message": "Anthropic credits exhausted.",
+                "source_channel_name": "broken_chan",
+                "timestamp": "2026-06-28T22:12:01+00:00",
+            },
+        ],
+    )
+    out = await admin_commands.handle_command(Msg("/status"))
+    assert "Recent successes" in out
+    assert "ok_chan" in out
+    # media_type is rendered for the successful event.
+    assert "photo" in out
+    # A failed event is not listed among the successes.
+    succ_block = out.split("Recent successes", 1)[1].split("Recent failures", 1)[0]
+    assert "broken_chan" not in succ_block
 
 
 async def test_status_humanizes_legacy_raw_error(admin_env, monkeypatch):
