@@ -56,7 +56,7 @@ _EN: Dict[str, str] = {
     "btn_cancel": "🚫 Cancel",
     # Menu chrome.
     "menu_greeting": (
-        "<b>📋 Relay bot menu</b>\n"
+        "<b>📋 Translator bot menu</b>\n"
         "Tap a button below, or open 🛠️ Settings to view and change configuration.\n"
         "Typed commands still work — tap ❓ Help to see them."
     ),
@@ -73,8 +73,7 @@ _EN: Dict[str, str] = {
     "settings_btn_model": "🤖 Set Model",
     "settings_btn_temp": "🌡️ Temperature",
     "settings_btn_tokens": "🔢 Max Tokens",
-    "settings_btn_cost": "💰 Cost & billing",
-    "settings_btn_log": "🪵 Log Level",
+    "settings_btn_log": "🪵 Logs",
     "settings_btn_rmch": "🗑️ Remove Channel",
     "settings_btn_close": "✖️ Close",
     # AI Settings submenu (model / temperature / max-tokens / cost).
@@ -83,7 +82,7 @@ _EN: Dict[str, str] = {
         "Model: {model}\n"
         "Temperature: {temp}\n"
         "Max tokens: {tokens}\n\n"
-        "Tune the translation model and review cost below."
+        "Tune the translation model below."
     ),
     "model_title": (
         "<b>🤖 Model</b>\n"
@@ -119,24 +118,17 @@ _EN: Dict[str, str] = {
         "arbitrarily high.\n"
         "Pick a value, or type <code>/setmaxtokens &lt;1..8192&gt;</code>."
     ),
-    # Cost / billing view (rendered by services/cost_report.render).
-    "cost_title": "<b>💰 Cost &amp; billing</b>",
-    "cost_mtd_admin": "Month-to-date ({month}): <b>${amount}</b> (Anthropic billing)",
-    "cost_mtd_local": "Month-to-date ({month}): <b>~${amount}</b> (local estimate)",
-    "cost_billing_next": "Next invoice: ~{date} (API usage is billed monthly)",
-    "cost_breakdown_header": "<b>By model (this month)</b>",
-    "cost_model_row": "{model}: {in_tok} in / {out_tok} out → ~${cost}",
-    "cost_none": "(no token usage recorded yet this month)",
-    "cost_caveat": (
-        "ℹ️ Local estimates price recorded token usage and cover only posts "
-        "translated since cost tracking was enabled. The Anthropic figure, when "
-        "shown, is authoritative."
-    ),
-    "btn_cost_refresh": "🔄 Refresh",
     "log_title": (
-        "<b>🪵 Log Level</b>\n"
-        "Current: {current}\nPick a level."
+        "<b>🪵 Logs</b>\n"
+        "View recent output, or change the level.\n"
+        "Current level: {current}"
     ),
+    "logs_btn_view": "📄 View recent logs",
+    "logs_btn_refresh": "🔄 Refresh",
+    "logs_body": "<b>📄 Recent logs</b>\n<pre>{body}</pre>",
+    "logs_none": "(no log file yet)",
+    "logs_empty": "(log file is empty)",
+    "logs_error": "❌ Couldn't read logs: {err}",
     "rmch_menu_title": "<b>🗑️ Remove Channel</b>\nPick a channel to stop relaying.",
     "rmch_none": "(no removable channels)",
     "rmch_confirm_title": "<b>🗑️ Remove '{name}'?</b>\nThis stops the relay for that pair.",
@@ -164,20 +156,18 @@ _EN: Dict[str, str] = {
     "common_none": "(none)",
     # Help.
     "help_text": (
-        "<b>Relay bot — admin menu</b>\n"
+        "<b>Translator bot — admin menu</b>\n"
         "Tap a button below; typed commands still work too.\n"
         "\n"
-        "📊 Status — uptime, channels, queue depth, recent events\n"
-        "🤖 AI Settings — model, temperature, max tokens, prompt, cost\n"
-        "🛠️ Settings — log level, channels, admins, language"
+        "📊 Status — uptime, connection, model, recent events\n"
+        "🤖 AI Settings — model, temperature, max tokens, prompt\n"
+        "🛠️ Settings — logs, channels, admins, language"
     ),
     # /status.
     "status": (
         "<b>Status</b>\n"
         "Uptime: {uptime}\n"
         "Pyrogram connected: {connected}\n"
-        "Source channels: {sources}\n"
-        "Metadata queue depth: {queue}\n"
         "Model: {model}"
     ),
     # /status — latest events feed (pull-based; replaces push alerts). One unified
@@ -199,11 +189,8 @@ _EN: Dict[str, str] = {
     ),
     # /config (the summary block embedded in Settings).
     "cfg_summary": (
-        "Model: {model}\n"
-        "Temperature: {temp}\n"
-        "Max Tokens: {tokens}\n"
         "Log Level: {log}\n"
-        "Admin IDs: {admins}\n"
+        "Admins: {admins}\n"
         "Channels: {channels}"
     ),
     # /channels.
@@ -320,7 +307,7 @@ _BE: Dict[str, str] = {
     "btn_cancel": "🚫 Скасаваць",
     # Menu chrome.
     "menu_greeting": (
-        "<b>📋 Меню рэлэй-бота</b>\n"
+        "<b>📋 Меню бота-перакладчыка</b>\n"
         "Націсніце кнопку ніжэй або адкрыйце 🛠️ Налады, каб прагледзець і змяніць "
         "канфігурацыю.\n"
         "Тэкставыя каманды таксама працуюць — націсніце ❓ Дапамога."
@@ -338,8 +325,7 @@ _BE: Dict[str, str] = {
     "settings_btn_model": "🤖 Задаць мадэль",
     "settings_btn_temp": "🌡️ Тэмпература",
     "settings_btn_tokens": "🔢 Макс. токенаў",
-    "settings_btn_cost": "💰 Кошт і білінг",
-    "settings_btn_log": "🪵 Узровень логаў",
+    "settings_btn_log": "🪵 Логі",
     "settings_btn_rmch": "🗑️ Выдаліць канал",
     "settings_btn_close": "✖️ Закрыць",
     # AI Settings submenu.
@@ -348,7 +334,7 @@ _BE: Dict[str, str] = {
         "Мадэль: {model}\n"
         "Тэмпература: {temp}\n"
         "Макс. токенаў: {tokens}\n\n"
-        "Наладзьце мадэль перакладу і прагледзьце кошт ніжэй."
+        "Наладзьце мадэль перакладу ніжэй."
     ),
     "model_title": (
         "<b>🤖 Мадэль</b>\n"
@@ -384,24 +370,17 @@ _BE: Dict[str, str] = {
         "адвольна шмат.\n"
         "Выберыце значэнне або ўвядзіце <code>/setmaxtokens &lt;1..8192&gt;</code>."
     ),
-    # Cost / billing view.
-    "cost_title": "<b>💰 Кошт і білінг</b>",
-    "cost_mtd_admin": "З пачатку месяца ({month}): <b>${amount}</b> (білінг Anthropic)",
-    "cost_mtd_local": "З пачатку месяца ({month}): <b>~${amount}</b> (лакальная ацэнка)",
-    "cost_billing_next": "Наступны рахунак: ~{date} (API білінгуецца штомесяц)",
-    "cost_breakdown_header": "<b>Па мадэлях (гэты месяц)</b>",
-    "cost_model_row": "{model}: {in_tok} увод / {out_tok} вывад → ~${cost}",
-    "cost_none": "(пакуль няма выкарыстання токенаў у гэтым месяцы)",
-    "cost_caveat": (
-        "ℹ️ Лакальныя ацэнкі разлічваюць запісанае выкарыстанне токенаў і "
-        "ахопліваюць толькі пасты, перакладзеныя пасля ўключэння ўліку кошту. "
-        "Лічба Anthropic, калі паказана, дакладная."
-    ),
-    "btn_cost_refresh": "🔄 Абнавіць",
     "log_title": (
-        "<b>🪵 Узровень логаў</b>\n"
-        "Бягучы: {current}\nВыберыце ўзровень."
+        "<b>🪵 Логі</b>\n"
+        "Паглядзіце апошні вывад або змяніце ўзровень.\n"
+        "Бягучы ўзровень: {current}"
     ),
+    "logs_btn_view": "📄 Паказаць апошнія логі",
+    "logs_btn_refresh": "🔄 Абнавіць",
+    "logs_body": "<b>📄 Апошнія логі</b>\n<pre>{body}</pre>",
+    "logs_none": "(файла логаў яшчэ няма)",
+    "logs_empty": "(файл логаў пусты)",
+    "logs_error": "❌ Не атрымалася прачытаць логі: {err}",
     "rmch_menu_title": "<b>🗑️ Выдаліць канал</b>\nВыберыце канал, каб спыніць рэтрансляцыю.",
     "rmch_none": "(няма каналаў для выдалення)",
     "rmch_confirm_title": "<b>🗑️ Выдаліць '{name}'?</b>\nГэта спыніць рэтрансляцыю гэтай пары.",
@@ -429,20 +408,18 @@ _BE: Dict[str, str] = {
     "common_none": "(няма)",
     # Help.
     "help_text": (
-        "<b>Рэлэй-бот — адмінскае меню</b>\n"
+        "<b>Бот-перакладчык — адмінскае меню</b>\n"
         "Націсніце кнопку ніжэй; набраныя каманды таксама працуюць.\n"
         "\n"
-        "📊 Стан — час працы, каналы, чарга, нядаўнія падзеі\n"
-        "🤖 Налады ІІ — мадэль, тэмпература, макс. токены, промпт, кошт\n"
-        "🛠️ Налады — узровень логаў, каналы, адміны, мова"
+        "📊 Стан — час працы, падключэнне, мадэль, нядаўнія падзеі\n"
+        "🤖 Налады ІІ — мадэль, тэмпература, макс. токены, промпт\n"
+        "🛠️ Налады — логі, каналы, адміны, мова"
     ),
     # /status.
     "status": (
         "<b>Стан</b>\n"
         "Час працы: {uptime}\n"
         "Pyrogram падключаны: {connected}\n"
-        "Зыходныя каналы: {sources}\n"
-        "Глыбіня чаргі метададзеных: {queue}\n"
         "Мадэль: {model}"
     ),
     # /status — нядаўнія збоі (без push-абвестак; глядзіце праз меню).
@@ -463,11 +440,8 @@ _BE: Dict[str, str] = {
     ),
     # /config summary.
     "cfg_summary": (
-        "Мадэль: {model}\n"
-        "Тэмпература: {temp}\n"
-        "Макс. токенаў: {tokens}\n"
         "Узровень логаў: {log}\n"
-        "ID адмінаў: {admins}\n"
+        "Адміны: {admins}\n"
         "Каналы: {channels}"
     ),
     # /channels.

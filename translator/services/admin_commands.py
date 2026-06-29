@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 import re
 import time
 from collections import Counter
@@ -27,7 +28,7 @@ from typing import List, Optional
 
 from pyrogram import enums, filters
 
-from translator.config import CONFIG, PROMPT_TEMPLATE_PATH
+from translator.config import CONFIG, LOG_FILE_PATH, PROMPT_TEMPLATE_PATH
 from translator.services import (
     admin_i18n,
     admin_prefs,
@@ -122,16 +123,14 @@ def _recent_events(lang: str = "en", lookback_days: int = 7, limit: int = 6) -> 
 
 
 def _cmd_status(start_ts, query_queue, pyro, lang: str = "en") -> str:
+    # query_queue is retained in the signature for call-site stability; the queue
+    # depth is no longer surfaced in /status.
     connected = getattr(pyro, "is_connected", None)
-    qsize = query_queue.qsize() if query_queue is not None else "?"
-    sources = CONFIG.get_source_channel_ids()
     status = t(
         "status",
         lang,
         uptime=_fmt_uptime(start_ts),
         connected=connected,
-        sources=len(sources),
-        queue=qsize,
         model=html.escape(str(CONFIG.ANTHROPIC_MODEL)),
     )
     return status + _recent_events(lang)
@@ -168,13 +167,6 @@ def _cmd_stats(args: List[str], lang: str = "en") -> str:
     return "\n".join(lines)
 
 
-def _cmd_cost(args: List[str], lang: str = "en") -> str:
-    """Cost / billing report (typed-command parity with the menu Cost view)."""
-    from translator.services import cost_report
-
-    return cost_report.render(lang)
-
-
 def _config_summary(lang: str = "en") -> str:
     """Current non-secret settings as value lines (no header).
 
@@ -182,14 +174,16 @@ def _config_summary(lang: str = "en") -> str:
     which supplies its own ``⚙️ Settings`` title. Labels mirror the submenu wording.
     """
     d = CONFIG.as_dict()
+    # Show admins by name (manual label → resolved @username → raw id fallback),
+    # reusing the same best-effort resolution as /admins.
+    admins = ", ".join(
+        html.escape(a["display"]) for a in admin_store.list_admins()
+    ) or t("common_none", lang)
     return t(
         "cfg_summary",
         lang,
-        model=html.escape(str(d["ANTHROPIC_MODEL"])),
-        temp=d["ANTHROPIC_TEMPERATURE"],
-        tokens=d["ANTHROPIC_MAX_TOKENS"],
         log=html.escape(str(d["LOG_LEVEL"])),
-        admins=d["ADMIN_CHAT_IDS"],
+        admins=admins,
         channels=html.escape(", ".join(d["LOGICAL_CHANNELS"])),
     )
 
@@ -213,6 +207,37 @@ def _cmd_prompt(lang: str = "en") -> str:
         return t("prompt_none", lang)
     text = PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
     return t("prompt_body", lang, body=html.escape(_truncate(text, 3500)))
+
+
+def _tail_lines(path: str, n: int, *, max_bytes: int = 64_000) -> str:
+    """Return the last ``n`` lines of ``path``, reading at most ``max_bytes``.
+
+    Seeks from the end so a large ``bot.log`` never gets read whole. When the
+    read starts mid-file the (possibly partial) first line is dropped.
+    """
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        start = max(0, size - max_bytes)
+        f.seek(start)
+        data = f.read()
+    text = data.decode("utf-8", errors="replace")
+    if start > 0:
+        text = text.split("\n", 1)[-1]
+    return "\n".join(text.splitlines()[-n:])
+
+
+def _cmd_logs(lang: str = "en", *, lines: int = 30) -> str:
+    """Most recent ``bot.log`` tail (newest at the bottom), HTML-escaped."""
+    if not os.path.exists(LOG_FILE_PATH):
+        return t("logs_none", lang)
+    try:
+        tail = _tail_lines(LOG_FILE_PATH, lines)
+    except OSError as exc:  # pragma: no cover - defensive
+        return t("logs_error", lang, err=html.escape(str(exc)))
+    if not tail.strip():
+        return t("logs_empty", lang)
+    return t("logs_body", lang, body=html.escape(_truncate(tail, 3500)))
 
 
 def _cmd_setmodel(args: List[str], lang: str = "en") -> str:
@@ -514,12 +539,12 @@ async def handle_command(
         return _cmd_status(start_ts, query_queue, pyro, lang)
     if cmd == "/stats":
         return _cmd_stats(args, lang)
-    if cmd == "/cost":
-        return _cmd_cost(args, lang)
     if cmd == "/channels":
         return _cmd_channels(lang)
     if cmd == "/prompt":
         return _cmd_prompt(lang)
+    if cmd == "/logs":
+        return _cmd_logs(lang)
     if cmd == "/setmodel":
         return _cmd_setmodel(args, lang)
     if cmd == "/settemp":

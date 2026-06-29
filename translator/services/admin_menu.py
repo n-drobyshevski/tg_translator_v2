@@ -38,7 +38,6 @@ from translator.services import (
     admin_prefs,
     admin_store,
     admin_wizard,
-    cost_report,
 )
 from translator.services.admin_i18n import t
 
@@ -127,6 +126,10 @@ def _back_to_ai(lang: str = "en") -> Row:
     return [(t("btn_back", lang), "nav:ai")]
 
 
+def _back_to_channels(lang: str = "en") -> Row:
+    return [(t("btn_back", lang), "nav:channels")]
+
+
 # Identifier echoed back in ``users_shared.button_id`` for the add-admin picker.
 ADD_ADMIN_BUTTON_ID = 1
 
@@ -145,7 +148,6 @@ def _settings_menu(lang: str = "en") -> Tuple[str, Rows]:
     rows: Rows = [
         [(t("settings_btn_log", lang), "nav:log")],
         [(t("btn_channels", lang), "nav:channels")],
-        [(t("settings_btn_rmch", lang), "nav:rmch")],
         [(t("btn_admins", lang), "nav:admins")],
         [(t("btn_language", lang), "nav:lang")],
         [(t("settings_btn_close", lang), "nav:close")],
@@ -169,7 +171,6 @@ def _ai_menu(lang: str = "en") -> Tuple[str, Rows]:
             (t("settings_btn_tokens", lang), "nav:tokens"),
         ],
         [(t("btn_prompt", lang), "nav:prompt")],
-        [(t("settings_btn_cost", lang), "nav:cost")],
         # AI Settings is a top-level menu (peer of Settings), so it closes
         # rather than navigating "back" to a parent.
         [(t("settings_btn_close", lang), "nav:close")],
@@ -185,16 +186,6 @@ def _prompt_menu(lang: str = "en") -> Tuple[str, Rows]:
     ``/setprompt``."""
     title = admin_commands._cmd_prompt(lang) + t("prompt_menu_hint", lang)
     rows: Rows = [_back_to_ai(lang)]
-    return title, rows
-
-
-def _cost_menu(lang: str = "en") -> Tuple[str, Rows]:
-    """Cost / billing view. Body comes from cost_report (local + optional admin API)."""
-    title = cost_report.render(lang)
-    rows: Rows = [
-        [(t("btn_cost_refresh", lang), "nav:cost")],
-        _back_to_ai(lang),
-    ]
     return title, rows
 
 
@@ -225,9 +216,20 @@ def _tokens_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 def _log_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = t("log_title", lang, current=CONFIG.LOG_LEVEL)
+    rows: Rows = [[(t("logs_btn_view", lang), "nav:logsview")]]
     levels = sorted(admin_commands._VALID_LOG_LEVELS)
-    rows: Rows = [[(lvl, f"set:log:{lvl}")] for lvl in levels]
+    rows += [[(lvl, f"set:log:{lvl}")] for lvl in levels]
     rows.append(_back_to_settings(lang))
+    return title, rows
+
+
+def _logs_view(lang: str = "en") -> Tuple[str, Rows]:
+    """Show the most recent bot.log tail with refresh / back-to-Logs buttons."""
+    title = admin_commands._cmd_logs(lang)
+    rows: Rows = [
+        [(t("logs_btn_refresh", lang), "nav:logsview")],
+        [(t("btn_back", lang), "nav:log")],
+    ]
     return title, rows
 
 
@@ -245,6 +247,7 @@ def _channels_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = admin_commands._cmd_channels(lang) + t("channels_menu_hint", lang)
     rows: Rows = [
         [(t("btn_add_channel_pair", lang), "addch:start")],
+        [(t("settings_btn_rmch", lang), "nav:rmch")],
         _back_to_settings(lang),
     ]
     return title, rows
@@ -260,8 +263,8 @@ def _rmch_menu(lang: str = "en") -> Tuple[str, Rows]:
     if removable:
         rows: Rows = [[(name, f"rmch:{name}")] for name in removable]
     else:
-        rows = [[(t("rmch_none", lang), "nav:settings")]]
-    rows.append(_back_to_settings(lang))
+        rows = [[(t("rmch_none", lang), "nav:channels")]]
+    rows.append(_back_to_channels(lang))
     return title, rows
 
 
@@ -315,8 +318,6 @@ def build_menu(menu_id: str, lang: str = "en") -> Tuple[str, Rows]:
         return _ai_menu(lang)
     if menu_id == "prompt":
         return _prompt_menu(lang)
-    if menu_id == "cost":
-        return _cost_menu(lang)
     if menu_id == "model":
         return _model_menu(lang)
     if menu_id == "temp":
@@ -325,6 +326,8 @@ def build_menu(menu_id: str, lang: str = "en") -> Tuple[str, Rows]:
         return _tokens_menu(lang)
     if menu_id == "log":
         return _log_menu(lang)
+    if menu_id == "logsview":
+        return _logs_view(lang)
     if menu_id == "lang":
         return _lang_menu(lang)
     if menu_id == "channels":

@@ -27,7 +27,7 @@ import sqlite3
 from typing import Any, Dict, Tuple
 
 from anthropic import AsyncAnthropic
-from translator.config import CONFIG, CACHE_DIR
+from translator.config import CONFIG, CACHE_DIR, LOG_FILE_PATH
 from translator.models import MetadataRequest
 from translator.services.anthropic_client import get_async_anthropic_client
 
@@ -71,7 +71,6 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # Ensure cache directory exists for logs
 os.makedirs(CACHE_DIR, exist_ok=True)
-LOG_FILE_PATH = os.path.join(CACHE_DIR, "bot.log")
 
 try:
     # Set up file logging

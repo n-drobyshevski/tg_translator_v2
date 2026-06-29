@@ -60,9 +60,23 @@ def test_config_button_merged_into_settings():
 
 def test_settings_menu_shows_current_values(admin_env):
     res = admin_menu.handle_callback("nav:settings")
-    assert "Model:" in res.text
-    assert CONFIG.ANTHROPIC_MODEL in res.text
+    # Model/temperature/max-tokens were dropped from the summary; it now shows
+    # log level, admins (by name/id), and channels.
+    assert "Model:" not in res.text
+    assert "Log Level:" in res.text
+    assert "Admins:" in res.text
     assert "Pick a setting to change." in res.text
+
+
+def test_settings_menu_lists_admins_by_name(admin_env, monkeypatch):
+    # When a username resolves, the summary shows it instead of the raw id.
+    monkeypatch.setattr(
+        admin_store, "resolve_name", lambda uid: "@alice" if uid == 111 else None
+    )
+    admin_store._name_cache.clear()
+    res = admin_menu.handle_callback("nav:settings")
+    assert "@alice" in res.text
+    assert "222" in res.text  # unresolved admin falls back to the raw id
 
 
 def test_nav_settings_returns_settings_rows(admin_env):
@@ -71,7 +85,7 @@ def test_nav_settings_returns_settings_rows(admin_env):
     data = _flat_data(res.rows)
     assert "nav:ai" not in data  # AI Settings is now a top-level menu
     assert "nav:model" not in data
-    assert "nav:rmch" in data
+    assert "nav:rmch" not in data  # Remove Channel lives under Channels now
     assert "nav:close" in data
 
 
@@ -84,14 +98,14 @@ def test_ai_is_top_level_reply_button():
 def test_ai_entry_returns_menu(admin_env):
     title, rows = admin_menu.ai_entry()
     data = _flat_data(rows)
-    for cd in ("nav:model", "nav:temp", "nav:tokens", "nav:prompt", "nav:cost"):
+    for cd in ("nav:model", "nav:temp", "nav:tokens", "nav:prompt"):
         assert cd in data
 
 
 def test_nav_ai_lists_children(admin_env):
     res = admin_menu.handle_callback("nav:ai")
     data = _flat_data(res.rows)
-    for cd in ("nav:model", "nav:temp", "nav:tokens", "nav:prompt", "nav:cost"):
+    for cd in ("nav:model", "nav:temp", "nav:tokens", "nav:prompt"):
         assert cd in data
     assert "nav:close" in data  # top-level menu: closes rather than going back
 
@@ -120,21 +134,21 @@ def test_ai_submenus_back_to_ai(admin_env, target):
     assert "nav:ai" in _flat_data(res.rows)
 
 
-@pytest.mark.parametrize("target", ["log", "rmch"])
+@pytest.mark.parametrize("target", ["log"])
 def test_settings_submenus_back_to_settings(admin_env, target):
     res = admin_menu.handle_callback(f"nav:{target}")
     assert res.rows is not None
     assert "nav:settings" in _flat_data(res.rows)
 
 
-def test_nav_cost_menu(admin_env, monkeypatch):
-    # Isolate from the real event DB / network — only the menu wiring is under test.
-    monkeypatch.setattr(admin_menu.cost_report, "render", lambda lang="en": "REPORT")
-    res = admin_menu.handle_callback("nav:cost")
-    assert res.text == "REPORT"
-    data = _flat_data(res.rows)
-    assert "nav:cost" in data  # refresh
-    assert "nav:ai" in data  # back to AI Settings
+def test_rmch_moved_under_channels(admin_env):
+    # Remove Channel is now reachable from the Channels submenu, not Settings.
+    chans = admin_menu.handle_callback("nav:channels")
+    assert "nav:rmch" in _flat_data(chans.rows)
+    # ...and the rmch list backs out to Channels rather than Settings.
+    rmch = admin_menu.handle_callback("nav:rmch")
+    assert "nav:channels" in _flat_data(rmch.rows)
+    assert "nav:settings" not in _flat_data(rmch.rows)
 
 
 def test_set_model_back_to_ai(admin_env):
@@ -151,6 +165,22 @@ def test_nav_close_clears_keyboard(admin_env):
     res = admin_menu.handle_callback("nav:close")
     assert res.rows is None
     assert "closed" in res.text.lower()
+
+
+def test_log_menu_offers_recent_logs(admin_env):
+    res = admin_menu.handle_callback("nav:log")
+    assert "nav:logsview" in _flat_data(res.rows)
+
+
+def test_logsview_renders_recent_tail(admin_env, monkeypatch):
+    log = admin_env / "bot.log"
+    log.write_text("\n".join(f"line {i}" for i in range(1, 51)), encoding="utf-8")
+    monkeypatch.setattr(admin_menu.admin_commands, "LOG_FILE_PATH", str(log))
+    res = admin_menu.handle_callback("nav:logsview")
+    assert "line 50" in res.text  # newest line is shown
+    data = _flat_data(res.rows)
+    assert "nav:logsview" in data  # refresh
+    assert "nav:log" in data  # back to the Logs submenu
 
 
 def test_set_log_applies(admin_env):

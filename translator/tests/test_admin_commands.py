@@ -1,5 +1,6 @@
 """Tests for the admin DM command dispatcher (handle_command)."""
 
+import re
 import types
 
 import pytest
@@ -255,6 +256,42 @@ async def test_removeadmin_last_blocked(admin_env, monkeypatch):
     out = await admin_commands.handle_command(Msg("/removeadmin 111"))
     assert out.startswith("❌") and "last admin" in out
     assert CONFIG.ADMIN_CHAT_IDS == [111]
+
+
+async def test_logs_command_missing_file(admin_env, monkeypatch):
+    monkeypatch.setattr(admin_commands, "LOG_FILE_PATH", str(admin_env / "nope.log"))
+    out = await admin_commands.handle_command(Msg("/logs"))
+    assert "no log file" in out.lower()
+
+
+async def test_logs_command_returns_recent_tail(admin_env, monkeypatch):
+    log = admin_env / "bot.log"
+    log.write_text("\n".join(f"line {i}" for i in range(1, 101)), encoding="utf-8")
+    monkeypatch.setattr(admin_commands, "LOG_FILE_PATH", str(log))
+    out = await admin_commands.handle_command(Msg("/logs"))
+    # Tail keeps the newest lines and drops the oldest (default 30 lines).
+    assert "line 100" in out
+    assert "line 71" in out
+    assert "line 1\n" not in out and "line 70" not in out
+
+
+def test_cmd_logs_empty_file(admin_env, monkeypatch):
+    log = admin_env / "bot.log"
+    log.write_text("   \n", encoding="utf-8")
+    monkeypatch.setattr(admin_commands, "LOG_FILE_PATH", str(log))
+    assert "empty" in admin_commands._cmd_logs().lower()
+
+
+def test_tail_lines_trims_partial_first_line(admin_env):
+    log = admin_env / "big.log"
+    log.write_text("\n".join(f"row{i}" for i in range(2000)), encoding="utf-8")
+    # A tiny byte budget forces a mid-file start; the (possibly partial) first
+    # line is dropped, so every returned line is complete and the newest is kept.
+    tail = admin_commands._tail_lines(str(log), 5, max_bytes=40)
+    lines = tail.splitlines()
+    assert lines[-1] == "row1999"
+    assert len(lines) <= 5
+    assert all(re.fullmatch(r"row\d+", ln) for ln in lines)
 
 
 async def test_unknown_command(admin_env):
