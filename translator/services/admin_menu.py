@@ -98,11 +98,13 @@ def build_reply_keyboard(lang: str = "en") -> List[List[str]]:
     (it only matters after an out-of-band ``.env`` edit, since the DM writers
     already reload live), so it stays a typed-only command — still resolvable via
     BUTTON_KEYS for typed flows / cached keyboards.
+
+    📈 Stats is likewise absent from the keyboard (the dashboard charts cover the
+    same ground), but ``/stats`` stays resolvable via BUTTON_KEYS.
     """
     return [
-        [t("btn_status", lang), t("btn_stats", lang)],
-        [t("btn_ai", lang), t("btn_settings", lang)],
-        [t("btn_help", lang)],
+        [t("btn_status", lang), t("btn_settings", lang)],
+        [t("btn_ai", lang), t("btn_help", lang)],
     ]
 
 

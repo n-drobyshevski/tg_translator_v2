@@ -164,27 +164,12 @@ _EN: Dict[str, str] = {
     "common_none": "(none)",
     # Help.
     "help_text": (
-        "<b>Relay bot — admin commands</b>\n"
-        "/menu — open the button menu (easiest)\n"
-        "/help — this message\n"
-        "/status — uptime, channels, queue depth, recent failures\n"
-        "/stats [days] — relay counts &amp; failures (default 7)\n"
-        "/cost — token usage, estimated cost &amp; next invoice\n"
-        "/channels — configured channel pairs\n"
-        "/prompt — current prompt template\n"
-        "/setmodel &lt;model&gt;\n"
-        "/settemp &lt;0..1&gt;\n"
-        "/setmaxtokens &lt;1..8192&gt;\n"
-        "/setloglevel &lt;DEBUG|INFO|WARNING|ERROR|CRITICAL&gt;\n"
-        "/setprompt &lt;template&gt; (multi-line, or reply to a message)\n"
-        "/addchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt; [src_name] [dst_name]\n"
-        "/editchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt;\n"
-        "/removechannel &lt;name&gt;\n"
-        "/admins — list admins\n"
-        "/addadmin &lt;user_id|@username&gt; [label]\n"
-        "/removeadmin &lt;user_id&gt;\n"
-        "/reload — re-read .env + prompt template\n"
-        "(/setprompt, /addchannel, /editchannel need typed input)"
+        "<b>Relay bot — admin menu</b>\n"
+        "Tap a button below; typed commands still work too.\n"
+        "\n"
+        "📊 Status — uptime, channels, queue depth, recent events\n"
+        "🤖 AI Settings — model, temperature, max tokens, prompt, cost\n"
+        "🛠️ Settings — log level, channels, admins, language"
     ),
     # /status.
     "status": (
@@ -195,13 +180,12 @@ _EN: Dict[str, str] = {
         "Metadata queue depth: {queue}\n"
         "Model: {model}"
     ),
-    # /status — recent failures section (pull-based; replaces push alerts).
-    "status_fail_header": "<b>Recent failures (last 7d) — {count}</b>",
-    "status_fail_none": "<b>Recent failures</b>\nNone in the last 7 days ✅",
-    "status_fail_line": "{time} UTC · {channel} · {reason}",
-    "status_succ_header": "<b>Recent successes (last 7d) — {count}</b>",
-    "status_succ_none": "<b>Recent successes</b>\nNone in the last 7 days",
-    "status_succ_line": "{time} UTC · {channel} · {media}",
+    # /status — latest events feed (pull-based; replaces push alerts). One unified
+    # list where each line's leading ✅/❌ shows the outcome.
+    "status_events_header": "<b>Recent events (last 7d) — {count}</b>",
+    "status_events_none": "<b>Recent events</b>\nNone in the last 7 days",
+    "status_event_ok": "✅ {time} UTC · {channel} · {media}",
+    "status_event_fail": "❌ {time} UTC · {channel} · {reason}",
     # /stats.
     "stats_usage": "❌ Usage: /stats [days]",
     "stats_days_range": "❌ days must be 1..30",
@@ -445,27 +429,12 @@ _BE: Dict[str, str] = {
     "common_none": "(няма)",
     # Help.
     "help_text": (
-        "<b>Рэлэй-бот — адмінскія каманды</b>\n"
-        "/menu — адкрыць меню з кнопкамі (найпрасцей)\n"
-        "/help — гэта паведамленне\n"
-        "/status — час працы, каналы, чарга, нядаўнія збоі\n"
-        "/stats [дні] — лік рэтрансляцый і збояў (па змаўчанні 7)\n"
-        "/cost — выкарыстанне токенаў, ацэнка кошту і наступны рахунак\n"
-        "/channels — наладжаныя пары каналаў\n"
-        "/prompt — бягучы шаблон промпта\n"
-        "/setmodel &lt;model&gt;\n"
-        "/settemp &lt;0..1&gt;\n"
-        "/setmaxtokens &lt;1..8192&gt;\n"
-        "/setloglevel &lt;DEBUG|INFO|WARNING|ERROR|CRITICAL&gt;\n"
-        "/setprompt &lt;шаблон&gt; (некалькі радкоў або адказам на паведамленне)\n"
-        "/addchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt; [src_name] [dst_name]\n"
-        "/editchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt;\n"
-        "/removechannel &lt;name&gt;\n"
-        "/admins — спіс адмінаў\n"
-        "/addadmin &lt;user_id|@username&gt; [метка]\n"
-        "/removeadmin &lt;user_id&gt;\n"
-        "/reload — перачытаць .env + шаблон промпта\n"
-        "(/setprompt, /addchannel, /editchannel патрабуюць уводу тэксту)"
+        "<b>Рэлэй-бот — адмінскае меню</b>\n"
+        "Націсніце кнопку ніжэй; набраныя каманды таксама працуюць.\n"
+        "\n"
+        "📊 Стан — час працы, каналы, чарга, нядаўнія падзеі\n"
+        "🤖 Налады ІІ — мадэль, тэмпература, макс. токены, промпт, кошт\n"
+        "🛠️ Налады — узровень логаў, каналы, адміны, мова"
     ),
     # /status.
     "status": (
@@ -477,12 +446,10 @@ _BE: Dict[str, str] = {
         "Мадэль: {model}"
     ),
     # /status — нядаўнія збоі (без push-абвестак; глядзіце праз меню).
-    "status_fail_header": "<b>Нядаўнія збоі (апошнія 7д) — {count}</b>",
-    "status_fail_none": "<b>Нядаўнія збоі</b>\nНяма за апошнія 7 дзён ✅",
-    "status_fail_line": "{time} UTC · {channel} · {reason}",
-    "status_succ_header": "<b>Нядаўнія паспяховыя (апошнія 7д) — {count}</b>",
-    "status_succ_none": "<b>Нядаўнія паспяховыя</b>\nНяма за апошнія 7 дзён",
-    "status_succ_line": "{time} UTC · {channel} · {media}",
+    "status_events_header": "<b>Нядаўнія падзеі (апошнія 7д) — {count}</b>",
+    "status_events_none": "<b>Нядаўнія падзеі</b>\nНяма за апошнія 7 дзён",
+    "status_event_ok": "✅ {time} UTC · {channel} · {media}",
+    "status_event_fail": "❌ {time} UTC · {channel} · {reason}",
     # /stats.
     "stats_usage": "❌ Ужыванне: /stats [дні]",
     "stats_days_range": "❌ дні мусяць быць 1..30",

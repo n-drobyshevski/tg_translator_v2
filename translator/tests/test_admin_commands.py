@@ -64,7 +64,11 @@ def admin_env(tmp_path, monkeypatch):
 
 async def test_help(admin_env):
     out = await admin_commands.handle_command(Msg("/help"))
-    assert "admin commands" in out.lower()
+    assert "admin menu" in out.lower()
+    # The simplified help describes the 3 top-level menus.
+    assert "status" in out.lower()
+    assert "ai settings" in out.lower()
+    assert "settings" in out.lower()
 
 
 async def test_admin_ids_parsed(admin_env):
@@ -280,37 +284,7 @@ async def test_stats_uses_events_dao(admin_env, monkeypatch):
     assert "Failures: 1" in out
 
 
-async def test_status_lists_recent_failures(admin_env, monkeypatch):
-    from translator.db import events_dao
-
-    monkeypatch.setattr(
-        events_dao,
-        "load_messages",
-        lambda since_iso=None, event_type=None: [
-            {
-                "posting_success": True,
-                "exception_message": "",
-                "source_channel_name": "ok_chan",
-                "timestamp": "2026-06-28T10:00:00+00:00",
-            },
-            {
-                "posting_success": False,
-                "exception_message": "Anthropic credits exhausted. Top up under Plans & Billing.",
-                "source_channel_name": "test_source",
-                "timestamp": "2026-06-28T22:12:01+00:00",
-            },
-        ],
-    )
-    out = await admin_commands.handle_command(Msg("/status"))
-    assert "Recent failures" in out
-    assert "test_source" in out
-    assert "Anthropic credits exhausted" in out
-    # The successful event is surfaced under the successes section, not failures.
-    assert "Recent successes" in out
-    assert "ok_chan" in out
-
-
-async def test_status_lists_recent_successes(admin_env, monkeypatch):
+async def test_status_lists_recent_events(admin_env, monkeypatch):
     from translator.db import events_dao
 
     monkeypatch.setattr(
@@ -326,20 +300,53 @@ async def test_status_lists_recent_successes(admin_env, monkeypatch):
             },
             {
                 "posting_success": False,
-                "exception_message": "Anthropic credits exhausted.",
-                "source_channel_name": "broken_chan",
+                "exception_message": "Anthropic credits exhausted. Top up under Plans & Billing.",
+                "source_channel_name": "test_source",
                 "timestamp": "2026-06-28T22:12:01+00:00",
             },
         ],
     )
     out = await admin_commands.handle_command(Msg("/status"))
-    assert "Recent successes" in out
+    # One unified feed; no more split successes/failures sections.
+    assert "Recent events" in out
+    assert "Recent successes" not in out
+    assert "Recent failures" not in out
+    # The successful event renders with ✅ and its media type.
+    assert "✅" in out
     assert "ok_chan" in out
-    # media_type is rendered for the successful event.
     assert "photo" in out
-    # A failed event is not listed among the successes.
-    succ_block = out.split("Recent successes", 1)[1].split("Recent failures", 1)[0]
-    assert "broken_chan" not in succ_block
+    # The failed event renders with ❌ and its humanized reason.
+    assert "❌" in out
+    assert "test_source" in out
+    assert "Anthropic credits exhausted" in out
+
+
+async def test_status_shows_only_latest_six_events(admin_env, monkeypatch):
+    from translator.db import events_dao
+
+    # 8 events, oldest-first (as load_messages returns them); only the newest 6
+    # should render, newest at the top.
+    events = [
+        {
+            "posting_success": True,
+            "exception_message": "",
+            "source_channel_name": f"chan{i}",
+            "media_type": "text",
+            "timestamp": f"2026-06-28T10:0{i}:00+00:00",
+        }
+        for i in range(8)
+    ]
+    monkeypatch.setattr(
+        events_dao, "load_messages", lambda since_iso=None, event_type=None: events
+    )
+    out = await admin_commands.handle_command(Msg("/status"))
+    # Oldest two are dropped; newest six are shown.
+    assert "chan0" not in out
+    assert "chan1" not in out
+    assert "chan2" in out
+    assert "chan7" in out
+    # The header still reports the full window count, not the display cap.
+    assert "(last 7d) — 8" in out
 
 
 async def test_status_humanizes_legacy_raw_error(admin_env, monkeypatch):
@@ -370,13 +377,14 @@ async def test_status_humanizes_legacy_raw_error(admin_env, monkeypatch):
     assert "Error code:" not in out  # the raw dump is no longer shown
 
 
-async def test_status_no_failures(admin_env, monkeypatch):
+async def test_status_no_events(admin_env, monkeypatch):
     from translator.db import events_dao
 
     monkeypatch.setattr(
         events_dao, "load_messages", lambda since_iso=None, event_type=None: []
     )
     out = await admin_commands.handle_command(Msg("/status"))
+    assert "Recent events" in out
     assert "None in the last 7 days" in out
 
 
@@ -451,7 +459,7 @@ async def test_setlang_persists_and_localizes(admin_env):
     be_help = await admin_commands.handle_command(Msg("/help", from_user=u))
     en_help = await admin_commands.handle_command(Msg("/help"))
     assert be_help != en_help
-    assert "адмінскія каманды" in be_help
+    assert "адмінскае меню" in be_help
 
 
 async def test_setlang_rejects_unknown(admin_env):

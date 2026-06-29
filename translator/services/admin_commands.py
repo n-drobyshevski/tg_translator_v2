@@ -89,11 +89,13 @@ def _cmd_help(lang: str = "en") -> str:
     return t("help_text", lang)
 
 
-def _recent_failures(lang: str = "en", lookback_days: int = 7, limit: int = 5) -> str:
-    """Recent relay failures as a '/status' section (pull-based; no push alerts).
+def _recent_events(lang: str = "en", lookback_days: int = 7, limit: int = 6) -> str:
+    """The latest relay events (success or failure) as a '/status' section.
 
-    Mirrors ``_cmd_stats``' read pattern. Returns a leading-blank-line block, or
-    "" if the event store can't be read — /status must never break on a DB hiccup.
+    Replaces the old split successes/failures blocks: operators usually just want
+    a quick "what happened last" feed where each line carries its own ✅/❌ status.
+    Pull-based; no push alerts. Returns a leading-blank-line block, or "" if the
+    event store can't be read — /status must never break on a DB hiccup.
     """
     try:
         from translator.db import events_dao
@@ -102,46 +104,20 @@ def _recent_failures(lang: str = "en", lookback_days: int = 7, limit: int = 5) -
         msgs = events_dao.load_messages(since_iso=cutoff)
     except Exception:  # pragma: no cover - defensive
         return ""
-    fails = [
-        m
-        for m in msgs
-        if not m.get("posting_success") and m.get("exception_message")
-    ]
-    if not fails:
-        return "\n\n" + t("status_fail_none", lang)
-    lines = [t("status_fail_header", lang, count=len(fails))]
-    for m in reversed(fails[-limit:]):  # newest first (load_messages is oldest-first)
+    if not msgs:
+        return "\n\n" + t("status_events_none", lang)
+    lines = [t("status_events_header", lang, count=len(msgs))]
+    for m in reversed(msgs[-limit:]):  # newest first (load_messages is oldest-first)
         ts = (m.get("timestamp") or "")[5:16].replace("T", " ")  # MM-DD HH:MM (UTC)
         chan = html.escape(str(m.get("source_channel_name") or "?"))
-        # humanize_text cleans up legacy events whose exception_message is a raw
-        # SDK dump; it is idempotent on already-humanized (new) events.
-        reason = html.escape(humanize_text(str(m.get("exception_message") or ""))[:90])
-        lines.append(t("status_fail_line", lang, time=ts, channel=chan, reason=reason))
-    return "\n\n" + "\n".join(lines)
-
-
-def _recent_successes(lang: str = "en", lookback_days: int = 7, limit: int = 5) -> str:
-    """Recent successful relays as a '/status' section (pull-based; no push alerts).
-
-    Mirrors ``_recent_failures``' read pattern. Returns a leading-blank-line block,
-    or "" if the event store can't be read — /status must never break on a DB hiccup.
-    """
-    try:
-        from translator.db import events_dao
-
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
-        msgs = events_dao.load_messages(since_iso=cutoff)
-    except Exception:  # pragma: no cover - defensive
-        return ""
-    succ = [m for m in msgs if m.get("posting_success")]
-    if not succ:
-        return "\n\n" + t("status_succ_none", lang)
-    lines = [t("status_succ_header", lang, count=len(succ))]
-    for m in reversed(succ[-limit:]):  # newest first (load_messages is oldest-first)
-        ts = (m.get("timestamp") or "")[5:16].replace("T", " ")  # MM-DD HH:MM (UTC)
-        chan = html.escape(str(m.get("source_channel_name") or "?"))
-        media = html.escape(str(m.get("media_type") or "text"))
-        lines.append(t("status_succ_line", lang, time=ts, channel=chan, media=media))
+        if m.get("posting_success"):
+            media = html.escape(str(m.get("media_type") or "text"))
+            lines.append(t("status_event_ok", lang, time=ts, channel=chan, media=media))
+        else:
+            # humanize_text cleans up legacy events whose exception_message is a raw
+            # SDK dump; it is idempotent on already-humanized (new) events.
+            reason = html.escape(humanize_text(str(m.get("exception_message") or ""))[:90])
+            lines.append(t("status_event_fail", lang, time=ts, channel=chan, reason=reason))
     return "\n\n" + "\n".join(lines)
 
 
@@ -158,7 +134,7 @@ def _cmd_status(start_ts, query_queue, pyro, lang: str = "en") -> str:
         queue=qsize,
         model=html.escape(str(CONFIG.ANTHROPIC_MODEL)),
     )
-    return status + _recent_successes(lang) + _recent_failures(lang)
+    return status + _recent_events(lang)
 
 
 def _cmd_stats(args: List[str], lang: str = "en") -> str:

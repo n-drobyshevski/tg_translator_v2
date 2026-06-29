@@ -215,6 +215,14 @@ def test_channels_removed_from_reply_keyboard():
     assert admin_menu.resolve_button_label(admin_i18n.t("btn_channels")) == "/channelsmenu"
 
 
+def test_stats_removed_from_reply_keyboard():
+    # Stats dropped from the keyboard (the dashboard charts cover it), but
+    # /stats stays resolvable for back-compat (typed flows / cached keyboards).
+    labels = [lbl for row in admin_menu.build_reply_keyboard() for lbl in row]
+    assert admin_i18n.t("btn_stats") not in labels
+    assert admin_menu.resolve_button_label(admin_i18n.t("btn_stats")) == "/stats"
+
+
 def test_reload_removed_from_reply_keyboard():
     # /reload has a narrow use case (out-of-band .env edits only), so it's a
     # typed-only command now; gone from the keyboard but still resolvable for
