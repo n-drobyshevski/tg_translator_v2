@@ -1,9 +1,10 @@
 """Admin control of the relay bot from a private Telegram DM.
 
 The bot's Pyrogram client is a *bot* account, so it already receives private
-messages. This module registers a single ``filters.private`` handler, gated to
+messages. This module registers a ``filters.private`` handler, gated to
 ``CONFIG.ADMIN_CHAT_IDS``, that exposes a small command surface to query status
-and change a whitelist of operational settings live.
+and change a whitelist of operational settings live, plus a defense-in-depth
+group-1 guard that explicitly logs and drops private DMs from non-admins.
 
 Writable settings are persisted to the shared root ``.env`` via
 ``env_store.set_env_var`` and applied immediately with ``CONFIG.reload()`` —
@@ -733,6 +734,18 @@ def register_admin_handlers(
             )
         except Exception:
             log.exception("failed to send admin reply")
+
+    # Defense-in-depth: any private DM that is NOT from an admin is explicitly
+    # logged and dropped here (group 1 runs independently of the group-0 admin
+    # dispatcher). No reply is sent — the admin surface stays invisible to
+    # non-admins. This makes the rejection intentional rather than "no handler
+    # happened to match".
+    @pyro.on_message(filters.private, group=1)
+    async def _reject_unauthorized(client, msg):  # noqa: ANN001
+        uid = getattr(getattr(msg, "from_user", None), "id", None)
+        if uid is not None and uid in CONFIG.ADMIN_CHAT_IDS:
+            return  # admin — already served by the group-0 dispatcher
+        log.warning("Ignoring admin DM from unauthorized user_id=%s", uid)
 
     # Inline-button presses (the Settings tree) arrive as callback queries.
     admin_menu.register_callback_handler(
