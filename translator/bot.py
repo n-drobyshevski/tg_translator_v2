@@ -44,9 +44,10 @@ from translator.utils.single_instance import (
     AlreadyRunningError,
 )
 from translator.utils.translation_utils import translate_html
-from translator.utils.message_utils import get_media_info, build_payload
+from translator.utils.message_utils import get_media_info, build_payload, build_post_link
 from translator.services.telegram_sender import TelegramSender
 from translator.services.event_logger import EventRecorder
+from translator.services.error_sender import send_alert
 from translator.utils.error_format import humanize_error
 from translator.services.admin_commands import register_admin_handlers
 from translator.services.log_forwarding import attach_error_forwarding
@@ -216,6 +217,12 @@ def register_handlers(
         pyro_log.info("=============================================")
 
         # === 0. Prepare recorder and extract metadata ===
+        # Per-message recorder: handlers run concurrently and the send methods
+        # read the destination off the recorder, so a shared instance could be
+        # reset (finalize) by another message mid-send, blanking dest_channel_id
+        # and causing an empty-chat_id POST. A fresh recorder per message keeps
+        # each message's state isolated.
+        recorder = EventRecorder()
         recorder.set(timestamp=datetime.now(timezone.utc).isoformat())
         recorder.set(source_channel_id=msg.chat.id, source_channel_name=msg.chat.title)
         recorder.set(event_type="create")
@@ -334,15 +341,24 @@ def register_handlers(
             )
         except Exception as exc:
             # Store a human-readable reason for the /status failures view; the raw
-            # exception goes to bot.log only. `no_forward` keeps the ERROR-log
-            # forwarder from DM'ing relay failures (they are pull-only now).
+            # exception goes to bot.log only. `no_forward` keeps the generic
+            # ERROR-log forwarder from DM'ing the cryptic raw line — we send our
+            # own readable alert (channel name + post link + plain reason) below.
+            reason = humanize_error(exc)
             recorder.set(
-                exception_message=humanize_error(exc),
+                exception_message=reason,
                 api_error_code=getattr(exc, "status_code", None)
                 or getattr(exc, "status", None),
             )
             pyro_log.error(
                 "FAILED %s: %s", msg.id, exc, extra={"no_forward": True}
+            )
+            await send_alert(
+                f"⚠️ Relay failed\n"
+                f"Channel: {msg.chat.title}\n"
+                f"Post: {build_post_link(msg)}\n"
+                f"Reason: {reason}",
+                key=f"relay-fail:{msg.chat.id}:{reason[:40]}",
             )
         # === 4. Log event and finalize recorder ===
         recorder.finalize()
@@ -357,6 +373,8 @@ def register_handlers(
         pyro_log.info("==== BEGIN HANDLING EDITED MESSAGE %s ====", msg.id)
         pyro_log.info("=============================================")
         # === 0. Prepare recorder and extract metadata ===
+        # Fresh per-message recorder — see handle_message for why sharing is unsafe.
+        recorder = EventRecorder()
         recorder.set(timestamp=datetime.now(timezone.utc).isoformat())
         recorder.set(source_channel_id=msg.chat.id, source_channel_name=msg.chat.title)
         recorder.set(event_type="edit")
@@ -421,10 +439,30 @@ def register_handlers(
             # Get destination message mapping
             dest_id = CONFIG.get_destination_msg_id(source_channel_id, message_id)
             if not dest_id:
-                raise ValueError(
-                    f"No destination message found for source channel {source_channel_id}, "
-                    f"message {message_id}"
+                # Expected condition, not an error: the original was never
+                # relayed (bot was down, or joined the channel after it was
+                # posted), so there is nothing to edit. Skip quietly and give
+                # the admin a readable heads-up (throttled per source channel).
+                pyro_log.info(
+                    "Edited post %s in %s (%s) has no relayed original; skipping.",
+                    message_id,
+                    msg.chat.title,
+                    source_channel_id,
                 )
+                await send_alert(
+                    f"✏️ Edited post skipped (original was never relayed)\n"
+                    f"Channel: {msg.chat.title}\n"
+                    f"Post: {build_post_link(msg)}",
+                    key=f"edit-no-dest:{source_channel_id}",
+                )
+                recorder.set(
+                    exception_message="edit skipped: original never relayed"
+                )
+                recorder.finalize()
+                pyro_log.info("=============================================")
+                pyro_log.info("==== END HANDLING EDITED MESSAGE %s ======", msg.id)
+                pyro_log.info("=============================================")
+                return
 
             # Get destination channel info
             dest_channel_id = CONFIG.get_destination_id(source_channel_id)
@@ -491,14 +529,23 @@ def register_handlers(
             )
         except Exception as exc:
             # Record the actual reason (the old code stored the still-None locals,
-            # so edit failures showed no reason). Pull-only: don't DM, just log raw.
+            # so edit failures showed no reason). Raw line stays out of the
+            # generic forwarder (`no_forward`); we send our own readable alert.
+            reason = humanize_error(exc)
             recorder.set(
-                exception_message=humanize_error(exc),
+                exception_message=reason,
                 api_error_code=getattr(exc, "status_code", None)
                 or getattr(exc, "status", None),
             )
             pyro_log.error(
                 "FAILED TO EDIT %s: %s", msg.id, exc, extra={"no_forward": True}
+            )
+            await send_alert(
+                f"⚠️ Edit relay failed\n"
+                f"Channel: {msg.chat.title}\n"
+                f"Post: {build_post_link(msg)}\n"
+                f"Reason: {reason}",
+                key=f"edit-fail:{msg.chat.id}:{reason[:40]}",
             )
 
         recorder.finalize()

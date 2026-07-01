@@ -59,6 +59,26 @@ def build_payload(msg, html_text: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def build_post_link(msg) -> str:
+    """Build a human-clickable link to a source post for admin alerts.
+
+    Public channels expose a ``t.me/<username>/<id>`` link; private channels
+    (``-100…`` ids) use the internal ``t.me/c/<internal_id>/<id>`` form. When
+    neither is resolvable, fall back to a plain ``(chat …, msg …)`` string so
+    the alert still identifies the post.
+    """
+    msg_id = getattr(msg, "id", None) or getattr(msg, "message_id", None)
+    chat = getattr(msg, "chat", None)
+    username = getattr(chat, "username", None) if chat else None
+    if username:
+        return f"https://t.me/{username}/{msg_id}"
+    chat_id = getattr(chat, "id", None) if chat else None
+    cid = str(chat_id) if chat_id is not None else ""
+    if cid.startswith("-100"):
+        return f"https://t.me/c/{cid[4:]}/{msg_id}"
+    return f"(chat {chat_id}, msg {msg_id})"
+
+
 def extract_channel_info(
     msg, mapping: Dict[int, str], target: str
 ) -> Tuple[str, Optional[str], str, str]:

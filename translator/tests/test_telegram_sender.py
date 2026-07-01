@@ -32,13 +32,17 @@ def test_split_message_long():
 @pytest.mark.asyncio
 @patch("translator.config.CHANNEL_CONFIGS", {})
 @patch("httpx.AsyncClient.post")
-async def test_send_message_unknown_channel(mock_post):
-    mock_post.return_value = MagicMock(status_code=500)
+async def test_send_message_empty_dest_raises(mock_post):
+    # An unresolved destination (no dest_channel_id on the recorder) must raise
+    # a non-retryable ValueError *before* any POST, instead of silently sending
+    # to an empty chat_id. This is the guard that prevents the shared-recorder
+    # concurrency bug from reaching the Telegram API.
     sender = TelegramSender()
     recorder = EventRecorder()
     recorder.set(dest_channel_name="notachannel")
-    success = await sender.send_message("text", recorder)
-    assert not success
+    with pytest.raises(ValueError):
+        await sender.send_message("text", recorder)
+    mock_post.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -48,12 +52,30 @@ async def test_send_message_unknown_channel(mock_post):
 )
 @patch("httpx.AsyncClient.post")
 async def test_send_message_no_channel_id(mock_post):
-    mock_post.return_value = MagicMock(status_code=500)
+    # dest_channel_name set but no dest_channel_id → same guard fires.
     sender = TelegramSender()
     recorder = EventRecorder()
     recorder.set(dest_channel_name="test")
-    success = await sender.send_message("text", recorder)
-    assert not success
+    with pytest.raises(ValueError):
+        await sender.send_message("text", recorder)
+    mock_post.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch(
+    "translator.config.CHANNEL_CONFIGS",
+    {"test": ChannelConfig(channel_id=TEST_CHANNEL_ID, bot_token=TEST_BOT_TOKEN)},
+)
+@patch("httpx.AsyncClient.post")
+async def test_send_media_empty_dest_raises(mock_post):
+    # Media path has the same guard: an empty dest_channel_id must raise before
+    # the POST rather than send media to an empty chat_id.
+    sender = TelegramSender()
+    recorder = EventRecorder()
+    recorder.set(dest_channel_name="test")  # no dest_channel_id
+    with pytest.raises(ValueError):
+        await sender.send_photo_message("file_id", "caption", recorder)
+    mock_post.assert_not_called()
 
 
 @pytest.mark.asyncio

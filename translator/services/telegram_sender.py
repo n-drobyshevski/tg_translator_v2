@@ -131,8 +131,8 @@ def advanced_content_comparison(text1: str, text2: str) -> bool:
 def get_channel_config(target: str):
     cfg = CHANNEL_CONFIGS.get(target)
     if not cfg:
-        logging.error("Unknown channel type: %s", target)
-        return None, "Unknown channel type"
+        logging.error("No channel config for destination key %r", target)
+        return None, "No channel config for destination key"
     if not getattr(cfg, "channel_id", None):
         logging.error("No channel_id for %s", target)
         return None, "No channel_id for target"
@@ -267,6 +267,14 @@ class TelegramSender:
         recorder: EventRecorder,
     ):
         target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
+        if not dest_channel_id:
+            # Guard against an unresolved/blanked destination (e.g. a recorder
+            # whose dest fields were never set). Raise a non-retryable ValueError
+            # so run_with_retries surfaces it to the handler instead of POSTing
+            # to an empty chat_id.
+            raise ValueError(
+                f"empty destination chat_id for send (dest_channel_name={target!r})"
+            )
 
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         chunks = self.split_message(text)
@@ -343,6 +351,12 @@ class TelegramSender:
         HTML; link previews don't apply to media.
         """
         target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
+        if not dest_channel_id:
+            # See send_message: refuse to POST media to an empty destination.
+            raise ValueError(
+                f"empty destination chat_id for {media_field} send "
+                f"(dest_channel_name={target!r})"
+            )
         cfg, err = get_channel_config(target)
         if not cfg:
             return False
