@@ -265,6 +265,7 @@ class TelegramSender:
         self,
         text: str,
         recorder: EventRecorder,
+        reply_to_message_id: Optional[int] = None,
     ):
         target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
         if not dest_channel_id:
@@ -288,6 +289,11 @@ class TelegramSender:
                 "text": sanitized_chunk,
                 "parse_mode": "HTML",
             }
+            # Reply to the photo so a split long-caption post stays grouped. Only
+            # the first chunk needs the linkage; keeping it on every chunk is
+            # harmless (all point at the same photo) and simpler.
+            if reply_to_message_id:
+                body["reply_to_message_id"] = reply_to_message_id
             # JSON body -> link_preview_options is a nested object directly.
             body["link_preview_options"] = build_link_preview_options()
             success, r, err = await self._post_telegram(url, json=body)

@@ -1,8 +1,62 @@
 import logging
+import re
 from html import escape
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("MEDIA")
+
+# Telegram caps media captions at 1024 chars (plain messages allow 4096). We
+# count raw HTML length (tags included) against this, which is conservative:
+# Telegram counts only the visible caption text, so tag overhead is free margin.
+CAPTION_LIMIT = 1024
+
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^>]*?(/?)>")
+
+
+def _tags_balanced(html: str) -> bool:
+    """True if ``html`` has every tag opened-and-closed and doesn't end mid-tag.
+
+    Used to pick caption/remainder split points that never cut through a tag
+    (e.g. a ``<a href=…>`` link or a ``<b>``/``<blockquote>`` span).
+    """
+    if html.count("<") != html.count(">"):
+        return False  # ends inside an unfinished tag
+    stack: List[str] = []
+    for m in _TAG_RE.finditer(html):
+        closing, name, self_closing = m.group(1), m.group(2).lower(), m.group(3)
+        if name == "br" or self_closing:
+            continue  # void / self-closing: no nesting
+        if closing:
+            if stack and stack[-1] == name:
+                stack.pop()
+            else:
+                return False  # stray or mismatched close
+        else:
+            stack.append(name)
+    return not stack
+
+
+def split_caption_html(text: str, limit: int = CAPTION_LIMIT) -> Tuple[str, str]:
+    """Split translated HTML into ``(caption, remainder)`` for a photo + reply.
+
+    ``caption`` is the largest run of whole lines that fits within ``limit``
+    while keeping all HTML tags balanced, so a tag/link is never cut in half.
+    ``remainder`` is meant to be posted as a reply to the photo. If not even the
+    first line fits with balanced tags (e.g. one giant paragraph), ``caption`` is
+    empty and the whole text goes to ``remainder`` (photo sent without caption).
+    """
+    if len(text) <= limit and _tags_balanced(text):
+        return text, ""
+    best = 0
+    for m in re.finditer(r"\n", text):
+        pos = m.end()
+        if pos > limit:
+            break
+        if _tags_balanced(text[:pos]):
+            best = pos
+    caption = text[:best].rstrip()
+    remainder = text[best:].lstrip()
+    return caption, remainder
 
 
 def get_media_info(msg, max_size: int) -> Tuple[Optional[str], Optional[int], str]:

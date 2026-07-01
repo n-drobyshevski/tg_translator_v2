@@ -63,21 +63,24 @@ class _CapturingPyro:
 
 
 class _FakeQueue:
+    def __init__(self, meta=None):
+        self._meta = meta if meta is not None else {"file": {}}
+
     async def put(self, req):
         if not req.response.done():
-            req.response.set_result({"file": {}})
+            req.response.set_result(self._meta)
 
 
-def _wire(monkeypatch, sender):
+def _wire(monkeypatch, sender, *, media=("", 0, "text"), meta=None, translated="translated"):
     """Patch the heavy pipeline pieces and return the registered handlers."""
     # Fresh per-message recorder without touching the DB.
     monkeypatch.setattr(bot, "EventRecorder", _DBLessRecorder)
-    monkeypatch.setattr(bot, "query_queue", _FakeQueue())
-    monkeypatch.setattr(bot, "get_media_info", lambda msg, max_size: ("", 0, "text"))
+    monkeypatch.setattr(bot, "query_queue", _FakeQueue(meta))
+    monkeypatch.setattr(bot, "get_media_info", lambda msg, max_size: media)
     monkeypatch.setattr(bot, "entities_to_html", lambda text, ents: text)
 
     async def _translate(*_args, **_kwargs):
-        return "translated"
+        return translated
 
     monkeypatch.setattr(bot, "translate_html", _translate)
 
@@ -213,3 +216,53 @@ async def test_edit_without_original_skips_and_heads_up(monkeypatch):
     assert "Edited post skipped" in text
     assert "https://t.me/c/1504042253/13337" in text
     assert kwargs["key"] == "edit-no-dest:-1001504042253"
+
+
+@pytest.mark.asyncio
+async def test_long_caption_photo_splits_into_photo_plus_reply(monkeypatch):
+    """A photo whose translated text exceeds 1024 chars posts the lead as the
+    photo caption and the remainder as a reply to that photo."""
+    from translator.utils.message_utils import _tags_balanced
+
+    lead = "<b>Lead sentence.</b>"
+    paras = "\n".join(f"<p>Paragraph number {i} with some body text.</p>" for i in range(40))
+    long_html = f"{lead}\n\n{paras}"
+    assert len(long_html) > 1024  # forces the split path
+
+    calls = {}
+
+    class _Sender:
+        async def send_photo_message(self, photo, caption, recorder):
+            calls["photo_caption"] = caption
+            recorder.set(dest_message_id=999)  # the photo's message id
+            return True
+
+        async def send_message(self, text, recorder, reply_to_message_id=None):
+            calls["reply_text"] = text
+            calls["reply_to"] = reply_to_message_id
+            return True
+
+        async def send_video_message(self, *a):
+            return True
+
+        async def send_document_message(self, *a):
+            return True
+
+    handlers = _wire(
+        monkeypatch,
+        _Sender(),
+        media=("fileid", 123, "photo"),
+        meta={"file": {}, "file_download_link": "http://img/x.jpg"},
+        translated=long_html,
+    )
+    msg = _FakeMsg(10, _FakeChat(1, "Channel One", "chan1"))
+    await handlers["message"](None, msg)
+
+    # Photo got a non-empty, within-limit, tag-balanced caption…
+    assert 0 < len(calls["photo_caption"]) <= 1024
+    assert _tags_balanced(calls["photo_caption"])
+    assert calls["photo_caption"].startswith(lead)
+    # …and the remainder was posted as a reply to the photo.
+    assert calls["reply_to"] == 999
+    assert calls["reply_text"]
+    assert _tags_balanced(calls["reply_text"])

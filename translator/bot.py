@@ -44,7 +44,12 @@ from translator.utils.single_instance import (
     AlreadyRunningError,
 )
 from translator.utils.translation_utils import translate_html
-from translator.utils.message_utils import get_media_info, build_payload, build_post_link
+from translator.utils.message_utils import (
+    get_media_info,
+    build_payload,
+    build_post_link,
+    split_caption_html,
+)
 from translator.services.telegram_sender import TelegramSender
 from translator.services.event_logger import EventRecorder
 from translator.services.error_sender import send_alert
@@ -321,16 +326,31 @@ def register_handlers(
                     )
                     await run_with_retries(send_media, file_id, translated, recorder)
                 else:
-                    # Caption exceeds Telegram's 1024-char media limit: post the
-                    # media (no caption) then the full translation as a separate
-                    # text message so the media isn't dropped.
+                    # Caption exceeds Telegram's 1024-char media limit. Keep the
+                    # image and text together: post the media with the lead of
+                    # the translation as its caption (whole paragraphs, tags kept
+                    # balanced) and post the remainder as a reply to that photo.
+                    caption, remainder = split_caption_html(translated)
                     pyro_log.info(
-                        "Caption too long for %s media (%d chars); sending media + follow-up text.",
+                        "Caption too long for %s media (%d chars); photo caption "
+                        "(%d) + reply remainder (%d).",
                         media_type,
                         len(translated),
+                        len(caption),
+                        len(remainder),
                     )
-                    await run_with_retries(send_media, file_id, "", recorder)
-                    await run_with_retries(sender.send_message, translated, recorder)
+                    photo_ok = await run_with_retries(
+                        send_media, file_id, caption, recorder
+                    )
+                    # If the photo posted, reply-link the rest to it; if it
+                    # failed, fall back to sending the full text so nothing is
+                    # lost (the lead was in the failed caption).
+                    reply_to = recorder.get("dest_message_id") if photo_ok else None
+                    follow_up = remainder if photo_ok else translated
+                    if follow_up:
+                        await run_with_retries(
+                            sender.send_message, follow_up, recorder, reply_to
+                        )
             else:
                 await run_with_retries(sender.send_message, translated, recorder)
             pyro_log.info(
