@@ -27,6 +27,22 @@ When you see a hyperlink in the form <a href='URL'>TEXT</a>, you must translate 
     <tg-spoiler>…</tg-spoiler>, <blockquote>…</blockquote> and
     <blockquote expandable>…</blockquote>. Translate only the text inside the
     tags; never add, drop, rename, or reorder a formatting tag.
+12. **Personal names and Belarusian/Ukrainian place names – transliterate from the
+    native language, not from Russian.** The post is in Russian, so names appear in
+    their Russian spelling. When a personal name (given name + surname) or a place name
+    belongs to a **Belarusian** person or place, reconstruct the Belarusian form and
+    romanize it with the official Belarusian system (diacritic‑free national forms),
+    NOT the Russian‑derived spelling. Examples:
+    Владимир → Uladzimir, Александр → Aliaksandr, Светлана → Sviatlana,
+    Николай → Mikalai; Гродно → Hrodna, Могилёв → Mahiliou, Витебск → Vitsebsk, Брест → Brest.
+    Do not output Vladimir / Alexander / Grodno / Mogilev for Belarusian names.
+13. **Ukrainian names – official 2010 (KMU) romanization.** Only when the person or
+    place is clearly Ukrainian, reconstruct the Ukrainian form and romanize with the
+    official Ukrainian 2010 system: Владимир → Volodymyr, Александр → Oleksandr,
+    Николай → Mykola; Киев → Kyiv, Львов → Lviv, Харьков → Kharkiv. Never write Kiev.
+    Default to the Belarusian rule (12) when it is unclear whether a name is Belarusian
+    or Ukrainian. Clearly Russian or international names keep their standard English
+    spelling (Москва → Moscow, Путин → Putin) – do NOT force them into Belarusian.
 </instructions>
 
 <example>
