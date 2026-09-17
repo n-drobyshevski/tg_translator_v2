@@ -5,6 +5,7 @@ from anthropic import Anthropic, AsyncAnthropic
 import logging
 import re
 from translator.config import CONFIG, load_prompt_template
+from translator.utils.model_capabilities import build_model_params
 
 PROMPT_TEMPLATE = load_prompt_template()
 
@@ -87,17 +88,10 @@ async def translate_html(
     """
     system_prompt, user_text = build_messages(payload["Html"])
     create = client.messages.create
+    model = CONFIG.ANTHROPIC_MODEL
     kwargs = dict(
-        model=CONFIG.ANTHROPIC_MODEL,
+        model=model,
         max_tokens=CONFIG.ANTHROPIC_MAX_TOKENS,
-        # anthropic 1.x dropped `temperature` (and top_p/top_k) from the
-        # messages.create() signature — passing it directly is a TypeError, and
-        # TypeError is in run_with_retries' NON_RETRYABLE tuple, so it would fail
-        # every translation permanently with no retry. The parameter is gone from
-        # the SDK signature, not from the API: claude-haiku-4-5 still honours it,
-        # and literal translation depends on temperature=0 being deterministic,
-        # so pass it through extra_body (merged into the request JSON as-is).
-        extra_body={"temperature": CONFIG.ANTHROPIC_TEMPERATURE},
         system=[
             {
                 "type": "text",
@@ -107,6 +101,17 @@ async def translate_html(
         ],
         messages=[{"role": "user", "content": user_text}],
     )
+    # The model decides which parameters are legal, and the model is switchable
+    # at runtime (env / admin DM /setmodel), so the request shape is derived per
+    # call rather than hard-coded: older models take a temperature, the Opus 4.7+
+    # surface rejects it and takes adaptive thinking + effort instead.
+    kwargs.update(
+        build_model_params(
+            model,
+            temperature=CONFIG.ANTHROPIC_TEMPERATURE,
+            effort=CONFIG.ANTHROPIC_EFFORT,
+        )
+    )
     if isinstance(client, AsyncAnthropic) or inspect.iscoroutinefunction(create):
         resp = await create(**kwargs)
     else:
@@ -115,10 +120,22 @@ async def translate_html(
     # indexing resp.content[0] would then raise IndexError. Guard explicitly and
     # raise a non-retryable ValueError (a refusal is deterministic for the same
     # input, so run_with_retries must not burn attempts/budget on it).
-    if getattr(resp, "stop_reason", None) == "refusal" or not resp.content:
+    stop_reason = getattr(resp, "stop_reason", None)
+    if stop_reason == "refusal" or not resp.content:
         raise ValueError(
             "Anthropic returned no usable content "
-            f"(stop_reason={getattr(resp, 'stop_reason', None)})"
+            f"(stop_reason={stop_reason})"
+        )
+    # A truncated translation must never reach the channel: with adaptive
+    # thinking the thinking tokens share the max_tokens budget, so an
+    # under-sized ANTHROPIC_MAX_TOKENS shows up here rather than as an API
+    # error. Non-retryable — retrying the same request truncates again; the
+    # operator needs to raise the budget (the alert carries the post link).
+    if stop_reason == "max_tokens":
+        raise ValueError(
+            "Anthropic response hit max_tokens and would be truncated "
+            f"(ANTHROPIC_MAX_TOKENS={CONFIG.ANTHROPIC_MAX_TOKENS}); "
+            "raise it or lower ANTHROPIC_EFFORT"
         )
     if usage_out is not None:
         u = getattr(resp, "usage", None)
@@ -129,7 +146,25 @@ async def translate_html(
             getattr(u, "cache_creation_input_tokens", 0) or 0
         )
         usage_out["model_used"] = getattr(resp, "model", "") or CONFIG.ANTHROPIC_MODEL
+    # Pick the text block(s) by type instead of indexing content[0]. With
+    # adaptive thinking the FIRST block is a thinking block, which has no
+    # `.text` at all — `content[0].text` would raise AttributeError on every
+    # translation (and thinking.display defaults to "omitted", so the block is
+    # there even though its text is empty).
+    # `type` defaults to "text" so a bare stub exposing only `.text` still works;
+    # a real thinking block carries type="thinking" (and `.thinking`, not
+    # `.text`), so it is excluded either way.
+    raw = "".join(
+        block.text
+        for block in resp.content
+        if getattr(block, "type", "text") == "text" and getattr(block, "text", None)
+    )
+    if not raw.strip():
+        raise ValueError(
+            "Anthropic returned no text block "
+            f"(stop_reason={stop_reason}, "
+            f"blocks={[getattr(b, 'type', None) for b in resp.content]})"
+        )
     # strip out non-HTML tags like <translation>, <example>, <source>, <user>, <instructions>, <system>
-    raw = resp.content[0].text
     cleaned = re.sub(r"</?(?:translation|example|source|user|instructions|system)>", "", raw)
     return cleaned

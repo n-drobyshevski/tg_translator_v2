@@ -88,9 +88,35 @@ async def test_settemp_rejects_out_of_range(admin_env):
     assert "0..1" in out
 
 
+async def test_settemp_warns_when_the_model_ignores_it(admin_env, monkeypatch):
+    # Sonnet 5 / Opus 4.7+ reject sampling params, so temperature isn't sent.
+    # Saving it is still right (it applies if the model is switched back), but
+    # the operator must not think they just changed the bot's behaviour.
+    await admin_commands.handle_command(Msg("/setmodel claude-sonnet-5"))
+    out = await admin_commands.handle_command(Msg("/settemp 0.5"))
+    assert "ANTHROPIC_TEMPERATURE = 0.5" in out
+    assert "ignores temperature" in out
+    assert "claude-sonnet-5" in out
+
+
+async def test_settemp_has_no_warning_on_a_sampling_model(admin_env):
+    await admin_commands.handle_command(Msg("/setmodel claude-haiku-4-5"))
+    out = await admin_commands.handle_command(Msg("/settemp 0.5"))
+    assert "ignores temperature" not in out
+
+
 async def test_setmaxtokens_applies(admin_env):
     await admin_commands.handle_command(Msg("/setmaxtokens 2000"))
     assert CONFIG.ANTHROPIC_MAX_TOKENS == 2000
+
+
+async def test_setmaxtokens_allows_headroom_above_the_new_default(admin_env):
+    # The old ceiling was 8192, only 192 above the 8000 default — with thinking
+    # sharing the budget, an operator hitting truncation needs room to raise it.
+    await admin_commands.handle_command(Msg("/setmaxtokens 32000"))
+    assert CONFIG.ANTHROPIC_MAX_TOKENS == 32000
+    out = await admin_commands.handle_command(Msg("/setmaxtokens 200000"))
+    assert out.startswith("❌")
 
 
 async def test_setloglevel_validates(admin_env):

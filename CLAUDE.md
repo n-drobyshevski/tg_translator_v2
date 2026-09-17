@@ -255,19 +255,51 @@ The manager and aggregator code is heavily instrumented with `print(...)`
 ## Translation specifics
 
 `translate_html` calls the model in `CONFIG.ANTHROPIC_MODEL` (env `ANTHROPIC_MODEL`,
-default **`claude-haiku-4-5`** — the old `claude-3-haiku-20240307` was retired by
-Anthropic on 2026-04-20). `ANTHROPIC_MAX_TOKENS`/`ANTHROPIC_TEMPERATURE` are also
-env-overridable (defaults 1500 / 0).
+default **`claude-sonnet-5`**). `ANTHROPIC_MAX_TOKENS` (8000),
+`ANTHROPIC_TEMPERATURE` (0) and `ANTHROPIC_EFFORT` (`low`) are env-overridable.
+The previous default, `claude-haiku-4-5`, is still served but carries a published
+retirement floor of 2026-10-15.
 
-> **`temperature` must go through `extra_body`.** `anthropic` 1.x removed
-> `temperature`/`top_p`/`top_k` from the `messages.create()` signature — passing one
-> is a `TypeError`, and `TypeError` is in `run_with_retries`' `NON_RETRYABLE` tuple,
-> so it would fail *every* translation permanently with no retry. The parameter is
-> gone from the SDK signature, not the API; `claude-haiku-4-5` still honours it. Note
-> that the test doubles all take `**kwargs` and so cannot catch this on their own —
-> `test_translate_html_kwargs_match_the_real_sdk_signature` binds the kwargs against
-> the installed SDK's real signature, which is what makes the next such removal a
-> failing test instead of a production outage.
+### The request shape follows the model
+
+**`utils/model_capabilities.py` is the single place that decides which parameters
+are legal for a given model**, because the model is switchable at runtime (env, or
+the admin DM `/setmodel`) and the two generations disagree:
+
+| | Haiku 4.5 / 4.6 / 4.5 line | Opus 4.7+ surface (incl. **Sonnet 5**) |
+|---|---|---|
+| `temperature` | accepted (via `extra_body`) | **rejected — 400** |
+| `output_config.effort` | errors on Sonnet/Haiku | supported |
+| `thinking` | n/a | adaptive, sent explicitly |
+
+Unknown model ids are treated as the **modern** surface on purpose: omitting a
+sampling parameter is accepted everywhere, while sending one 400s on the new
+models — so the safe guess is the one that can't take the relay down.
+
+Three traps this code exists to avoid, all of which fail on *every* message:
+
+1. **`temperature` is never a named kwarg.** `anthropic` 1.x removed it from the
+   `messages.create()` signature, so passing it is a `TypeError` — and `TypeError`
+   is in `run_with_retries`' `NON_RETRYABLE` tuple, so it fails permanently with no
+   retry. On models that still accept it, it travels in `extra_body`.
+2. **Never index `resp.content[0].text`.** With adaptive thinking the first block
+   is a *thinking* block, which has no `.text` at all (and `thinking.display`
+   defaults to `"omitted"`, so it's present with empty text even when reasoning
+   isn't surfaced). Select blocks by `type == "text"` instead.
+3. **`max_tokens` covers thinking + response together.** An under-sized budget
+   surfaces as `stop_reason == "max_tokens"`, i.e. a translation cut off mid-post.
+   `translate_html` raises on it rather than publishing the partial text.
+
+> The test doubles all take `**kwargs` and so cannot catch a dropped parameter on
+> their own — `test_translate_html_kwargs_match_the_real_sdk_signature` binds our
+> kwargs against the installed SDK's real signature, for *both* surfaces. That is
+> what makes the next such removal a failing test instead of a production outage.
+
+> **Test-isolation caveat:** `env_store.set_env_var` writes to `os.environ` as well
+> as `.env`, so any test exercising `/setmodel` (or another `_persist_and_reload`
+> command) leaks that value into every later test in the run. Tests that depend on
+> the model must pin `CONFIG.ANTHROPIC_MODEL` themselves rather than trust the
+> ambient default.
 
 The system/instructions/example prompt lives in
 `translator/prompt_template.txt` (loaded via `config.load_prompt_template`) and

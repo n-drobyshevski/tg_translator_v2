@@ -46,14 +46,30 @@ class Config:
         self.TELEGRAM_API_ID = int(self._require("TELEGRAM_API_ID"))
         self.TELEGRAM_API_HASH = self._require("TELEGRAM_API_HASH")
         self.ANTHROPIC_API_KEY = self._require("ANTHROPIC_API_KEY")
-        # Translation model + params (env-overridable so future model swaps need no code change).
-        # NOTE: claude-3-haiku-20240307 was retired 2026-04-20; the default below is its
-        # Anthropic-recommended replacement. claude-haiku-4-5 is still Anthropic's current
-        # fast/cheap tier as of 2026-06 (alias auto-tracks the latest snapshot; pin
-        # ANTHROPIC_MODEL=claude-haiku-4-5-20251022 if you need a fixed snapshot).
-        self.ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
-        self.ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "1500"))
+        # Translation model + params (env-overridable so model swaps need no code
+        # change; `utils/model_capabilities` adapts the request shape to whatever
+        # is set, so /setmodel can move between model generations at runtime).
+        #
+        # Default is claude-sonnet-5. The previous default, claude-haiku-4-5, is
+        # still served but carries a published retirement floor of 2026-10-15.
+        # Set an alias (auto-tracks the latest snapshot) or pin a dated snapshot.
+        self.ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+        # Raised from 1500 alongside the Sonnet 5 default, for two compounding
+        # reasons: its tokenizer produces ~30% more tokens for the same text, and
+        # max_tokens caps thinking + response *together*, so adaptive thinking
+        # eats into the same budget. Too low shows up as a truncated translation
+        # (translate_html turns stop_reason="max_tokens" into a hard error rather
+        # than posting a half-finished message).
+        self.ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "8000"))
+        # Only sent to models that still accept sampling parameters (Haiku 4.5 and
+        # the 4.6/4.5 line). The Opus 4.7+ surface — including Sonnet 5 — rejects
+        # it, so on the default model this is simply not sent.
         self.ANTHROPIC_TEMPERATURE = float(os.getenv("ANTHROPIC_TEMPERATURE", "0"))
+        # Thinking depth on the Opus 4.7+ surface (low|medium|high|xhigh|max).
+        # "low" suits this workload: literal translation against a fixed prompt is
+        # a well-specified task, not multi-step reasoning, and the relay is
+        # latency-sensitive. Ignored by models that don't take `effort`.
+        self.ANTHROPIC_EFFORT = os.getenv("ANTHROPIC_EFFORT", "low").strip().lower()
         self.SOURCE_TEST_ID = int(self._require("TEST_CHANNEL"))
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -178,6 +194,7 @@ class Config:
             "ANTHROPIC_MODEL": self.ANTHROPIC_MODEL,
             "ANTHROPIC_MAX_TOKENS": self.ANTHROPIC_MAX_TOKENS,
             "ANTHROPIC_TEMPERATURE": self.ANTHROPIC_TEMPERATURE,
+            "ANTHROPIC_EFFORT": self.ANTHROPIC_EFFORT,
             "LOG_LEVEL": self.LOG_LEVEL,
             "ADMIN_CHAT_IDS": self.ADMIN_CHAT_IDS,
             "LOGICAL_CHANNELS": [
