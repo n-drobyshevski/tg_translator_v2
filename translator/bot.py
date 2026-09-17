@@ -51,6 +51,11 @@ from translator.utils.message_utils import (
     split_caption_html,
 )
 from translator.services.telegram_sender import TelegramSender
+from translator.services.media_group_buffer import (
+    MediaGroupBuffer,
+    can_send_as_album,
+    input_media_type,
+)
 from translator.services.event_logger import EventRecorder
 from translator.services.error_sender import send_alert
 from translator.utils.error_format import humanize_error
@@ -116,6 +121,17 @@ except OSError as e:
         LOG_FILE_PATH,
         e,
     )
+
+
+# Media kinds the relay can re-send, and the subset that carries no caption.
+# `get_media_info` returns these keys; `video_note` is separated out because
+# sendVideoNote is the one media endpoint that accepts no `caption` (the
+# translation is posted as a reply to the note instead), which also means an
+# edit to such a post must go through editMessageText, not editMessageCaption.
+CAPTIONLESS_MEDIA = frozenset({"video_note"})
+CAPTIONED_MEDIA = frozenset(
+    {"photo", "video", "doc", "animation", "audio", "voice"}
+)
 
 
 def _edit_target_mismatch(recorder: EventRecorder) -> bool:
@@ -213,9 +229,14 @@ def register_handlers(
         and m.chat.id in CONFIG.get_source_channel_ids()
     )
 
-    # The following handler matches ALL channel messages, which can cause duplicate handling
-    @pyro.on_message(filters.channel & source_filter)
-    async def handle_message(_: Client, msg):
+    async def _relay_single(msg, album=None):
+        """Перевести и отправить в английский канал одно сообщение.
+
+        ``album`` (список ``[(input_media_type, file_id), …]``) передаётся, когда
+        сообщение — «ведущая» часть медиагруппы: текст, метаданные и перевод
+        берутся из него, а на отправке вместо одиночного медиа уходит весь
+        альбом одним ``sendMediaGroup``.
+        """
         pyro_log.info("\n\n")
         pyro_log.info("=============================================")
         pyro_log.info("==== BEGIN HANDLING MESSAGE %s ====", msg.id)
@@ -316,10 +337,54 @@ def register_handlers(
                 "photo": sender.send_photo_message,
                 "video": sender.send_video_message,
                 "doc": sender.send_document_message,
+                "animation": sender.send_animation_message,
+                "audio": sender.send_audio_message,
+                "voice": sender.send_voice_message,
+                "video_note": sender.send_video_note_message,
             }
             send_media = media_dispatch.get(media_type)
-            if send_media and meta.get("file_download_link"):
+            if album:
+                # Whole album in one call, caption on the first item. Telegram
+                # shows only that caption for the group.
+                pyro_log.info(
+                    "Relaying media group of %d item(s) with translated caption.",
+                    len(album),
+                )
                 if len(translated) < 1024:
+                    await run_with_retries(
+                        sender.send_media_group, album, translated, recorder
+                    )
+                else:
+                    # Same split as a long single-media caption: lead as the
+                    # album caption, remainder as a reply to the album.
+                    caption, remainder = split_caption_html(translated)
+                    album_ok = await run_with_retries(
+                        sender.send_media_group, album, caption, recorder
+                    )
+                    reply_to = recorder.get("dest_message_id") if album_ok else None
+                    follow_up = remainder if album_ok else translated
+                    if follow_up:
+                        await run_with_retries(
+                            sender.send_message, follow_up, recorder, reply_to
+                        )
+            elif send_media and meta.get("file_download_link"):
+                if media_type in CAPTIONLESS_MEDIA:
+                    # sendVideoNote takes no caption at all, so the note goes out
+                    # bare and the whole translation follows as a reply to it.
+                    pyro_log.info(
+                        "Detected %s message; media carries no caption, "
+                        "posting translation as a reply.",
+                        media_type,
+                    )
+                    note_ok = await run_with_retries(
+                        send_media, file_id, "", recorder
+                    )
+                    reply_to = recorder.get("dest_message_id") if note_ok else None
+                    if translated:
+                        await run_with_retries(
+                            sender.send_message, translated, recorder, reply_to
+                        )
+                elif len(translated) < 1024:
                     pyro_log.info(
                         "Detected %s message; re-sending media with translated caption.",
                         media_type,
@@ -385,6 +450,48 @@ def register_handlers(
         pyro_log.info("=============================================")
         pyro_log.info("==== END HANDLING MESSAGE %s ====", msg.id)
         pyro_log.info("=============================================")
+
+    async def relay_media_group(items):
+        """Отправить собранный альбом одним постом (или по частям, если нельзя)."""
+        infos = [get_media_info(m, max_size) for m in items]
+        media_types = [media_type for _, _, media_type in infos]
+        # Часть могла не пройти по размеру (file_id пустой) — тогда альбом уже
+        # неполный, и лучше отдать элементы по одному, чем молча потерять их.
+        if not can_send_as_album(media_types) or not all(fid for fid, _, _ in infos):
+            pyro_log.info(
+                "Media group of %d item(s) can't go as one album "
+                "(types=%s); relaying parts separately.",
+                len(items),
+                media_types,
+            )
+            for item in items:
+                await _relay_single(item)
+            return
+        # Типы проверены выше, поэтому input_media_type здесь уже не вернёт None.
+        album = [
+            (input_media_type(media_type), file_id)
+            for file_id, _, media_type in infos
+        ]
+        # Подпись у альбома одна и висит на одной из частей — переводим её.
+        lead = next((m for m in items if (m.text or m.caption)), items[0])
+        await _relay_single(lead, album=album)
+
+    media_groups = MediaGroupBuffer(relay_media_group)
+
+    # The following handler matches ALL channel messages, which can cause duplicate handling
+    @pyro.on_message(filters.channel & source_filter)
+    async def handle_message(_: Client, msg):
+        # Альбом приходит как N отдельных апдейтов с общим media_group_id, и
+        # подпись есть только у одного из них. Копим части и релеим один раз,
+        # иначе альбом из 4 фото станет 4 постами с 4 переводами.
+        group_id = getattr(msg, "media_group_id", None)
+        if group_id:
+            pyro_log.info(
+                "Message %s is part of media group %s; buffering.", msg.id, group_id
+            )
+            await media_groups.add(msg.chat.id, group_id, msg)
+            return
+        await _relay_single(msg)
 
     @pyro.on_edited_message(filters.channel & source_filter)
     async def handle_edit_message(_: Client, msg):
@@ -514,14 +621,16 @@ def register_handlers(
             )
             pyro_log.info("Translated.")
 
-            # Route the edit by how the post was originally delivered: media
-            # posts (photo/video/doc whose caption fits) were sent with a
-            # caption and must be edited via editMessageCaption; everything else
-            # via editMessageText. Recompute the same decision used on send, and
-            # self-heal by retrying the other method if Telegram reports the
-            # target had no text/caption.
+            # Route the edit by how the post was originally delivered: captioned
+            # media whose caption fits was sent with a caption and must be edited
+            # via editMessageCaption; everything else via editMessageText.
+            # Recompute the same decision used on send, and self-heal by retrying
+            # the other method if Telegram reports the target had no text/caption.
+            # A video note is deliberately excluded: it was relayed bare with the
+            # translation in a separate reply, so the recorded destination message
+            # is that text reply, not the note.
             is_media_delivery = (
-                media_type in ("photo", "video", "doc")
+                media_type in CAPTIONED_MEDIA
                 and meta.get("file_download_link")
                 and len(translated) < 1024
             )
@@ -573,6 +682,10 @@ def register_handlers(
         pyro_log.info("==== END HANDLING EDITED MESSAGE %s ======", msg.id)
         pyro_log.info("=============================================")
 
+    # Возвращается, чтобы main_async мог погасить таймеры недособранных альбомов
+    # на выключении (иначе asyncio ругается на брошенные задачи).
+    return media_groups
+
 
 ###############################################################################
 # Main                                                                        #
@@ -606,7 +719,7 @@ async def main_async():
     start_ts = time.monotonic()
     pyro, ptb_app, anthropic, sender, event_recorder = init_clients()
 
-    register_handlers(pyro, anthropic, sender, event_recorder)
+    media_groups = register_handlers(pyro, anthropic, sender, event_recorder)
     # Admin DM control surface (status/config/channels/prompt). query_queue and
     # start_ts are passed in to avoid importing back into this module.
     register_admin_handlers(
@@ -640,6 +753,9 @@ async def main_async():
     await stop_event.wait()
 
     pyro_log.info("Shutting down …")
+    # Недособранные альбомы уже не отправить — гасим их таймеры, чтобы не
+    # оставлять висящие задачи на закрывающемся лупе.
+    await media_groups.close()
     await ptb_app.stop()
     await pyro.stop()
     logger.info("=== BOT SHUTDOWN COMPLETE ===")

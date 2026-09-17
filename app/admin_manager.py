@@ -2,6 +2,7 @@ import os
 import re
 import logging
 from datetime import datetime, timezone
+from functools import lru_cache
 from flask import Blueprint, render_template, request, jsonify, session, flash, redirect, url_for, abort
 import requests
 import asyncio
@@ -142,6 +143,51 @@ def get_target_channels():
     ]
 
 
+def _preserve_custom_emoji() -> bool:
+    """Whether to let <tg-emoji> through to Telegram.
+
+    Custom emoji used to be Premium-only, so they were always stripped. Bot API
+    9.4 (2026-02-09) lets bots send them directly, but a bot can still only use
+    emoji it has access to — Telegram rejects the whole message otherwise. Opt-in
+    so a bad emoji id can't take the relay down.
+    """
+    return os.getenv("PRESERVE_CUSTOM_EMOJI", "").strip().lower() not in ("", "0", "false", "no")
+
+
+@lru_cache(maxsize=2)
+def _build_cleaner(preserve_custom_emoji: bool) -> nh3.Cleaner:
+    """Build (once per variant) the nh3 Cleaner for Telegram's HTML subset.
+
+    nh3 0.3 added the reusable ``Cleaner``; compiling the policy once beats
+    re-deriving the tag/attribute sets on every admin request.
+
+    Telegram-supported HTML tags (Bot API). Widened from b/i/u/a/code so that
+    strikethrough, spoilers, code blocks and quotes aren't silently dropped.
+    Disallowed tags are stripped but their text content is kept (equivalent to
+    bleach's old strip=True). ``link_rel=None`` stops nh3 injecting
+    rel="noopener noreferrer", which Telegram's <a> must not carry.
+    """
+    tags = {'b', 'i', 'u', 's', 'a', 'code', 'pre', 'blockquote', 'tg-spoiler'}
+    attributes = {
+        'a': {'href'},
+        'code': {'class'},   # e.g. class="language-python" for code blocks
+        'blockquote': {'expandable'},
+    }
+    if preserve_custom_emoji:
+        tags.add('tg-emoji')
+        attributes['tg-emoji'] = {'emoji-id'}
+    return nh3.Cleaner(tags=tags, attributes=attributes, link_rel=None)
+
+
+def _telegram_cleaner() -> nh3.Cleaner:
+    """The Cleaner for the current PRESERVE_CUSTOM_EMOJI setting.
+
+    The env read stays per-call (so the flag can be flipped without a restart, as
+    every other env-gated option here can); only the Cleaner itself is cached.
+    """
+    return _build_cleaner(_preserve_custom_emoji())
+
+
 def clean_telegram_html(content: str) -> str:
     """Clean and format HTML content specifically for Telegram API.
     
@@ -163,34 +209,31 @@ def clean_telegram_html(content: str) -> str:
     content = re.sub(r'<(/?)em>', r'<\1i>', content)
     content = re.sub(r'<(/?)ins>', r'<\1u>', content)
     content = re.sub(r'<(/?)(?:strike|del)>', r'<\1s>', content)
-
-    # Telegram-supported HTML tags (Bot API). Widened from b/i/u/a/code so that
-    # strikethrough, spoilers, code blocks and quotes aren't silently dropped.
-    # nh3 takes a set of tags and a dict of tag -> set of attributes (vs bleach's
-    # list/dict); disallowed tags are stripped but their text content is kept
-    # (equivalent to the old strip=True). link_rel=None stops nh3 injecting
-    # rel="noopener noreferrer", which Telegram's <a> must not carry.
-    telegram_allowed_tags = {'b', 'i', 'u', 's', 'a', 'code', 'pre', 'blockquote', 'tg-spoiler'}
-    telegram_allowed_attributes = {
-        'a': {'href'},
-        'code': {'class'},   # e.g. class="language-python" for code blocks
-        'blockquote': {'expandable'},
-    }
-
-    # Clean with nh3 - this removes unsupported tags and attributes
-    cleaned = nh3.clean(
+    # <span class="tg-spoiler"> is the other spelling Telegram documents for a
+    # spoiler. Rewrite the whole pair to <tg-spoiler> so the spoiler survives (it
+    # used to be stripped entirely) without allowing arbitrary <span> through.
+    # Matching the pair matters: rewriting the closing tag on its own would
+    # orphan a </tg-spoiler> after any *other* <span> nh3 goes on to strip.
+    content = re.sub(
+        r'<span\s+class\s*=\s*(["\'])tg-spoiler\1\s*>(.*?)</span>',
+        r'<tg-spoiler>\2</tg-spoiler>',
         content,
-        tags=telegram_allowed_tags,
-        attributes=telegram_allowed_attributes,
-        link_rel=None,
+        flags=re.DOTALL,
     )
-    
-    # Convert <p> to line breaks (compatible with existing sanitize_html)
-    cleaned = re.sub(r'<p[^>]*>', '', cleaned)
-    cleaned = re.sub(r'</p>', '\n', cleaned)
-    
-    # Convert <br> variants to newlines (compatible with existing sanitize_html)
-    cleaned = re.sub(r'<br[^>]*/?>', '\n', cleaned)
+
+    # Convert <p>/<br> to line breaks BEFORE cleaning (compatible with the bot's
+    # own sanitize_html). This has to run first: nh3 strips <p> and <br> as
+    # disallowed tags and keeps only their text, so doing it afterwards found
+    # nothing left to convert and silently glued every paragraph together.
+    # The tag name must be delimited, too — a bare `<p[^>]*>` also matches
+    # `<pre>`, which stripped a code block's opening tag and left its `</pre>`
+    # behind: malformed HTML that Telegram rejects with "Can't parse entities".
+    content = re.sub(r'<p(?:\s[^>]*)?>', '', content)
+    content = re.sub(r'</p\s*>', '\n', content)
+    content = re.sub(r'<br\s*/?>', '\n', content)
+
+    # Clean with the shared Cleaner - this removes unsupported tags/attributes
+    cleaned = _telegram_cleaner().clean(content)
     
     # Remove empty tags that might cause issues
     cleaned = re.sub(r'<([a-z]+)></\1>', '', cleaned)

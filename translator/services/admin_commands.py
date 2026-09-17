@@ -39,6 +39,7 @@ from translator.services import (
 )
 from translator.services.admin_i18n import t
 from translator.utils.error_format import humanize_text
+from translator.utils.model_capabilities import supports_sampling_params
 from translator.utils.prompt_validation import validate_prompt
 from translator.utils.translation_utils import reload_prompt_template
 
@@ -259,7 +260,12 @@ def _cmd_settemp(args: List[str], lang: str = "en") -> str:
     if not 0.0 <= val <= 1.0:
         return t("settemp_range", lang)
     _persist_and_reload("ANTHROPIC_TEMPERATURE", str(val))
-    return t("settemp_ok", lang, val=val)
+    reply = t("settemp_ok", lang, val=val)
+    # Saving is still correct (it applies if the model is switched back), but
+    # say so rather than let the operator think they changed something.
+    if not supports_sampling_params(CONFIG.ANTHROPIC_MODEL):
+        reply += t("settemp_ignored", lang, model=html.escape(CONFIG.ANTHROPIC_MODEL))
+    return reply
 
 
 def _cmd_setmaxtokens(args: List[str], lang: str = "en") -> str:
@@ -269,7 +275,10 @@ def _cmd_setmaxtokens(args: List[str], lang: str = "en") -> str:
         val = int(args[0])
     except ValueError:
         return t("settokens_nan", lang)
-    if not 1 <= val <= 8192:
+    # Ceiling raised from 8192 alongside the Sonnet 5 default: max_tokens now
+    # covers thinking + response together, and the default itself is 8000, which
+    # left almost no headroom. 128000 is the current models' real output cap.
+    if not 1 <= val <= 128000:
         return t("settokens_range", lang)
     _persist_and_reload("ANTHROPIC_MAX_TOKENS", str(val))
     return t("settokens_ok", lang, val=val)

@@ -23,6 +23,36 @@ class _DBLessRecorder(EventRecorder):
         self.reset()
 
 
+class _MediaStubs:
+    """No-op stubs for every media send the handler dispatches on.
+
+    ``handle_message`` builds its dispatch dict eagerly from ``sender.send_*``,
+    so a fake sender must expose all of them or attribute lookup fails before
+    the test's own path is reached. Subclasses override only what they assert on.
+    """
+
+    async def send_photo_message(self, *a, **kw):
+        return True
+
+    async def send_video_message(self, *a, **kw):
+        return True
+
+    async def send_document_message(self, *a, **kw):
+        return True
+
+    async def send_animation_message(self, *a, **kw):
+        return True
+
+    async def send_audio_message(self, *a, **kw):
+        return True
+
+    async def send_voice_message(self, *a, **kw):
+        return True
+
+    async def send_video_note_message(self, *a, **kw):
+        return True
+
+
 class _FakeChat:
     def __init__(self, chat_id, title, username):
         self.id = chat_id
@@ -108,7 +138,7 @@ async def test_per_message_recorder_isolation(monkeypatch):
     OWN destination — the fix for the shared-recorder empty-chat_id bug."""
     seen = []
 
-    class _Sender:
+    class _Sender(_MediaStubs):
         async def send_message(self, text, recorder):
             # Yield so the two handlers genuinely interleave.
             await asyncio.sleep(0)
@@ -119,15 +149,6 @@ async def test_per_message_recorder_isolation(monkeypatch):
                     id(recorder),
                 )
             )
-            return True
-
-        async def send_photo_message(self, *a):
-            return True
-
-        async def send_video_message(self, *a):
-            return True
-
-        async def send_document_message(self, *a):
             return True
 
     handlers = _wire(monkeypatch, _Sender())
@@ -151,18 +172,9 @@ async def test_relay_failure_sends_readable_alert(monkeypatch):
     alert = AsyncMock()
     monkeypatch.setattr(bot, "send_alert", alert)
 
-    class _Sender:
+    class _Sender(_MediaStubs):
         async def send_message(self, text, recorder):
             raise RuntimeError("boom")
-
-        async def send_photo_message(self, *a):
-            return True
-
-        async def send_video_message(self, *a):
-            return True
-
-        async def send_document_message(self, *a):
-            return True
 
     handlers = _wire(monkeypatch, _Sender())
     msg = _FakeMsg(10, _FakeChat(1, "Channel One", "chan1"))
@@ -185,7 +197,7 @@ async def test_edit_without_original_skips_and_heads_up(monkeypatch):
     # No relayed original for this edit.
     monkeypatch.setattr(bot.CONFIG, "get_destination_msg_id", lambda *a: None)
 
-    class _Sender:
+    class _Sender(_MediaStubs):
         async def send_message(self, *a):
             return True
 
@@ -194,15 +206,6 @@ async def test_edit_without_original_skips_and_heads_up(monkeypatch):
 
         async def edit_caption(self, *a):
             raise AssertionError("edit_caption must not be called when there is no original")
-
-        async def send_photo_message(self, *a):
-            return True
-
-        async def send_video_message(self, *a):
-            return True
-
-        async def send_document_message(self, *a):
-            return True
 
     handlers = _wire(monkeypatch, _Sender())
     # Private channel (-100…) → the alert link uses the t.me/c/ form.
@@ -231,7 +234,7 @@ async def test_long_caption_photo_splits_into_photo_plus_reply(monkeypatch):
 
     calls = {}
 
-    class _Sender:
+    class _Sender(_MediaStubs):
         async def send_photo_message(self, photo, caption, recorder):
             calls["photo_caption"] = caption
             recorder.set(dest_message_id=999)  # the photo's message id
@@ -240,12 +243,6 @@ async def test_long_caption_photo_splits_into_photo_plus_reply(monkeypatch):
         async def send_message(self, text, recorder, reply_to_message_id=None):
             calls["reply_text"] = text
             calls["reply_to"] = reply_to_message_id
-            return True
-
-        async def send_video_message(self, *a):
-            return True
-
-        async def send_document_message(self, *a):
             return True
 
     handlers = _wire(
@@ -266,3 +263,165 @@ async def test_long_caption_photo_splits_into_photo_plus_reply(monkeypatch):
     assert calls["reply_to"] == 999
     assert calls["reply_text"]
     assert _tags_balanced(calls["reply_text"])
+
+
+@pytest.mark.asyncio
+async def test_animation_relays_through_send_animation(monkeypatch):
+    """A GIF must go out via sendAnimation, not fall through to a text-only relay."""
+    calls = {}
+
+    class _Sender(_MediaStubs):
+        async def send_animation_message(self, animation, caption, recorder):
+            calls["animation"] = (animation, caption)
+            return True
+
+        async def send_message(self, text, recorder, reply_to_message_id=None):
+            calls["text"] = text
+            return True
+
+    handlers = _wire(
+        monkeypatch,
+        _Sender(),
+        media=("gif-id", 123, "animation"),
+        meta={"file": {}, "file_download_link": "http://img/x.gif"},
+        translated="<b>Short caption.</b>",
+    )
+    await handlers["message"](None, _FakeMsg(10, _FakeChat(1, "Channel One", "chan1")))
+
+    assert calls["animation"] == ("gif-id", "<b>Short caption.</b>")
+    assert "text" not in calls  # the caption rode along with the media
+
+
+@pytest.mark.asyncio
+async def test_video_note_posts_bare_note_plus_reply(monkeypatch):
+    """sendVideoNote accepts no caption, so the note goes out bare and the whole
+    translation follows as a reply to it — not silently dropped with the caption."""
+    calls = {}
+
+    class _Sender(_MediaStubs):
+        async def send_video_note_message(self, note, caption, recorder):
+            calls["note"] = (note, caption)
+            recorder.set(dest_message_id=555)
+            return True
+
+        async def send_message(self, text, recorder, reply_to_message_id=None):
+            calls["reply_text"] = text
+            calls["reply_to"] = reply_to_message_id
+            return True
+
+    handlers = _wire(
+        monkeypatch,
+        _Sender(),
+        media=("note-id", 123, "video_note"),
+        meta={"file": {}, "file_download_link": "http://img/x.mp4"},
+        translated="<b>Translated note text.</b>",
+    )
+    await handlers["message"](None, _FakeMsg(10, _FakeChat(1, "Channel One", "chan1")))
+
+    # The note itself carried no caption...
+    assert calls["note"] == ("note-id", "")
+    # ...and the full translation landed as a reply to it.
+    assert calls["reply_text"] == "<b>Translated note text.</b>"
+    assert calls["reply_to"] == 555
+
+
+@pytest.mark.asyncio
+async def test_media_group_relays_as_one_album(monkeypatch):
+    """An album must produce ONE sendMediaGroup with ONE translated caption —
+    not one post (and one translation) per part."""
+    calls = {}
+    translations = []
+
+    class _Sender(_MediaStubs):
+        async def send_media_group(self, album, caption, recorder):
+            calls["album"] = album
+            calls["caption"] = caption
+            recorder.set(dest_message_id=777)
+            return True
+
+        async def send_message(self, text, recorder, reply_to_message_id=None):
+            calls.setdefault("texts", []).append(text)
+            return True
+
+    # Parts arrive as separate updates; only the first carries the caption.
+    parts = []
+    for i, has_caption in enumerate([True, False, False], start=1):
+        m = _FakeMsg(i, _FakeChat(1, "Channel One", "chan1"))
+        m.text = "подпись альбома" if has_caption else None
+        m.caption = None
+        m.media_group_id = "album-1"
+        parts.append(m)
+
+    media_by_id = {1: ("f1", 10, "photo"), 2: ("f2", 10, "photo"), 3: ("f3", 10, "video")}
+    handlers = _wire(
+        monkeypatch,
+        _Sender(),
+        meta={"file": {}, "file_download_link": "http://img/x.jpg"},
+        translated="<b>Album caption.</b>",
+    )
+    monkeypatch.setattr(bot, "get_media_info", lambda msg, max_size: media_by_id[msg.id])
+
+    async def _counting_translate(*_a, **_kw):
+        translations.append(1)
+        return "<b>Album caption.</b>"
+
+    monkeypatch.setattr(bot, "translate_html", _counting_translate)
+    # Buffer flushes on quiet; keep the test fast.
+    monkeypatch.setenv("MEDIA_GROUP_DEBOUNCE", "0.02")
+
+    for part in parts:
+        await handlers["message"](None, part)
+    await asyncio.sleep(0.15)
+
+    # photo+video may share an album, so all three go in one call...
+    assert calls["album"] == [("photo", "f1"), ("photo", "f2"), ("video", "f3")]
+    assert calls["caption"] == "<b>Album caption.</b>"
+    # ...and the caption was translated exactly once, not once per part.
+    assert len(translations) == 1
+    assert "texts" not in calls
+
+
+@pytest.mark.asyncio
+async def test_unalbumable_group_falls_back_to_separate_posts(monkeypatch):
+    """A group Telegram won't accept as one album (here: a voice note, which is
+    never albumable) must still relay every part rather than drop them."""
+    sent = []
+
+    class _Sender(_MediaStubs):
+        async def send_media_group(self, album, caption, recorder):
+            raise AssertionError("must not attempt an album for unsupported types")
+
+        async def send_photo_message(self, photo, caption, recorder):
+            sent.append(("photo", photo))
+            return True
+
+        async def send_voice_message(self, voice, caption, recorder):
+            sent.append(("voice", voice))
+            return True
+
+        async def send_message(self, text, recorder, reply_to_message_id=None):
+            sent.append(("text", text))
+            return True
+
+    parts = []
+    for i in (1, 2):
+        m = _FakeMsg(i, _FakeChat(1, "Channel One", "chan1"))
+        m.media_group_id = "album-2"
+        parts.append(m)
+
+    media_by_id = {1: ("f1", 10, "photo"), 2: ("f2", 10, "voice")}
+    handlers = _wire(
+        monkeypatch,
+        _Sender(),
+        meta={"file": {}, "file_download_link": "http://img/x.jpg"},
+        translated="<b>Short.</b>",
+    )
+    monkeypatch.setattr(bot, "get_media_info", lambda msg, max_size: media_by_id[msg.id])
+    monkeypatch.setenv("MEDIA_GROUP_DEBOUNCE", "0.02")
+
+    for part in parts:
+        await handlers["message"](None, part)
+    await asyncio.sleep(0.15)
+
+    assert ("photo", "f1") in sent
+    assert ("voice", "f2") in sent

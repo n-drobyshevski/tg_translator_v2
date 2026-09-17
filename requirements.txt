@@ -1,8 +1,11 @@
 # Telegram API clients
 # Kurigram is the maintained drop-in replacement for the abandoned Pyrogram.
 # It still exposes the `pyrogram` import package, so no code changes are needed.
-kurigram==2.2.23
+kurigram==2.2.26
 # AIORateLimiter (used in bot.py) needs the optional rate-limiter extra to work.
+# 22.8 is the newest release; it targets Bot API 10.0. That lag doesn't matter
+# here — PTB is used only as a Bot-API RPC client for get_chat/get_file, while
+# the relay's own sends go through TelegramSender's raw httpx calls.
 python-telegram-bot[rate-limiter]==22.8
 
 # HTTP requests
@@ -11,22 +14,27 @@ requests==2.34.2
 httpx==0.28.1
 
 # For configuration
-python-dotenv==1.2.2
+python-dotenv==1.2.3
 
-# For Anthropic API
-anthropic==0.112.0
+# For Anthropic API.
+# 1.x moved the SDK's internal HTTP layer to `httpx2`, which installs alongside
+# the `httpx` pinned above (different distribution) — the two do not conflict,
+# and our own httpx use (TelegramSender / error_sender) is unaffected.
+# 1.x also dropped `temperature`/`top_p`/`top_k` from messages.create(); see
+# translation_utils.translate_html, which passes temperature via extra_body.
+anthropic==1.6.0
 
 # HTML sanitizing for the admin manager.
 # nh3 replaces bleach, which is end-of-life (final release 6.4.0; the repo was
 # archived/made read-only on 2026-06-10 and will receive no further security
 # fixes). nh3 is the maintained, Rust-backed (ammonia) drop-in.
-nh3>=0.2.18
+nh3>=0.3.7
 
 # Admin web app
 flask==3.1.3
 flask-login==0.6.3
 # CSRF protection for the admin POST forms.
-flask-wtf>=1.2.1
+flask-wtf>=1.3.0
 
 # Explicit security floors for Flask's transitive dependencies so a constrained
 # or cached resolver cannot install a vulnerable build:

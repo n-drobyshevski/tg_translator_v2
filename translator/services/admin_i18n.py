@@ -211,10 +211,16 @@ _EN: Dict[str, str] = {
     "settemp_nan": "❌ Temperature must be a number 0..1",
     "settemp_range": "❌ Temperature must be 0..1",
     "settemp_ok": "✅ ANTHROPIC_TEMPERATURE = {val}",
+    "settemp_ignored": (
+        "\n\n⚠️ Saved, but the current model ({model}) ignores temperature — "
+        "Claude Opus 4.7+ and Sonnet 5 reject sampling parameters, so it is not "
+        "sent. Use /setmodel to switch to a model that accepts it, or tune "
+        "ANTHROPIC_EFFORT instead."
+    ),
     # /setmaxtokens.
-    "settokens_usage": "❌ Usage: /setmaxtokens &lt;1..8192&gt;",
+    "settokens_usage": "❌ Usage: /setmaxtokens &lt;1..128000&gt;",
     "settokens_nan": "❌ max_tokens must be an integer",
-    "settokens_range": "❌ max_tokens must be 1..8192",
+    "settokens_range": "❌ max_tokens must be 1..128000",
     "settokens_ok": "✅ ANTHROPIC_MAX_TOKENS = {val}",
     # /setloglevel.
     "setlog_usage": "❌ Usage: /setloglevel &lt;LEVEL&gt;",
@@ -462,10 +468,16 @@ _BE: Dict[str, str] = {
     "settemp_nan": "❌ Тэмпература мусіць быць лікам 0..1",
     "settemp_range": "❌ Тэмпература мусіць быць 0..1",
     "settemp_ok": "✅ ANTHROPIC_TEMPERATURE = {val}",
+    "settemp_ignored": (
+        "\n\n⚠️ Захавана, але бягучая мадэль ({model}) ігнаруе temperature — "
+        "Claude Opus 4.7+ і Sonnet 5 адхіляюць параметры сэмплавання, таму ён не "
+        "адпраўляецца. Выкарыстайце /setmodel, каб перайсці на мадэль, якая яго "
+        "прымае, або наладзьце ANTHROPIC_EFFORT."
+    ),
     # /setmaxtokens.
-    "settokens_usage": "❌ Ужыванне: /setmaxtokens &lt;1..8192&gt;",
+    "settokens_usage": "❌ Ужыванне: /setmaxtokens &lt;1..128000&gt;",
     "settokens_nan": "❌ max_tokens мусіць быць цэлым лікам",
-    "settokens_range": "❌ max_tokens мусіць быць 1..8192",
+    "settokens_range": "❌ max_tokens мусіць быць 1..128000",
     "settokens_ok": "✅ ANTHROPIC_MAX_TOKENS = {val}",
     # /setloglevel.
     "setlog_usage": "❌ Ужыванне: /setloglevel &lt;LEVEL&gt;",
