@@ -36,6 +36,18 @@ def is_active(uid) -> bool:
     return uid in _PENDING
 
 
+def current_step(uid) -> str | None:
+    """Which field the wizard is waiting on: ``name``/``src``/``dst``, else None.
+
+    The Pyrogram layer reads this *after* :func:`feed` to decide whether to
+    attach the native channel picker — the id steps get one, the name step does
+    not. Kept here rather than inferred from the reply text so the two can't
+    drift apart.
+    """
+    st = _PENDING.get(uid)
+    return st.get("step") if st else None
+
+
 def start(uid) -> None:
     """Begin (or restart) the wizard for ``uid`` at the first field."""
     _PENDING[uid] = {"step": "name"}

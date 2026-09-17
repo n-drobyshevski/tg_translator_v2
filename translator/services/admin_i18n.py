@@ -54,6 +54,8 @@ _EN: Dict[str, str] = {
     "btn_no_back": "◀️ No, back",
     "btn_add_admin": "➕ Add admin",
     "btn_cancel": "🚫 Cancel",
+    # Greyed-out hint inside the message input box while the menu keyboard is up.
+    "kbd_placeholder": "Pick a button, or type a command",
     # Menu chrome.
     "menu_greeting": (
         "<b>📋 Translator bot menu</b>\n"
@@ -80,19 +82,23 @@ _EN: Dict[str, str] = {
     "ai_title": (
         "<b>🤖 AI Settings</b>\n"
         "Model: {model}\n"
-        "Temperature: {temp}\n"
-        "Max tokens: {tokens}\n\n"
+        "Temperature: {temp}{temp_flag}\n"
+        "Max tokens: {tokens}\n"
+        "Effort: {effort}{effort_flag}\n\n"
         "Tune the translation model below."
     ),
+    # Marks a knob the active model ignores, inline in the AI Settings summary.
+    "ai_inert_flag": " (ignored)",
     "model_title": (
         "<b>🤖 Model</b>\n"
         "Current: {current}\n\n"
         "Capability vs. price (USD per 1M tokens, input / output):\n"
-        "• Haiku 4.5 — $1 / $5 — fastest &amp; cheapest (default)\n"
-        "• Sonnet 4.6 — $3 / $15 — balanced\n"
-        "• Opus 4.8 — $5 / $25 — most capable, priciest\n"
+        "• Haiku 4.5 — $1 / $5 — fastest &amp; cheapest\n"
+        "• Sonnet 5 — $2 / $10 — balanced (default)\n"
+        "• Opus 5 — $5 / $25 — most capable, priciest\n"
         "Each post bills input (source + prompt) + output (translation) tokens, "
         "so a higher tier costs several× more per post.\n"
+        "The greyed-out row is what's already active.\n"
         "Pick a preset, or type <code>/setmodel &lt;id&gt;</code> for any other."
     ),
     "temp_title": (
@@ -106,6 +112,14 @@ _EN: Dict[str, str] = {
         "💲 Cost: none — temperature changes wording, not token usage or price.\n"
         "Pick a value, or type <code>/settemp &lt;0..1&gt;</code>."
     ),
+    # Appended to temp_title when the active model is on the Opus 4.7+ surface,
+    # which rejects sampling parameters outright — the value is still saved (it
+    # applies if the model is switched back) but nothing is sent.
+    "temp_inert_note": (
+        "\n\n⚠️ <b>Not in use right now.</b> {model} rejects sampling "
+        "parameters, so temperature is not sent at all. Tune ⚡ Effort instead, "
+        "or /setmodel to a model that accepts it."
+    ),
     "tokens_title": (
         "<b>🔢 Max Tokens</b>\n"
         "Current: {current}\n\n"
@@ -116,7 +130,36 @@ _EN: Dict[str, str] = {
         "💲 Cost: you pay only for output tokens actually generated, at the "
         "model's output rate — so set it a little above your longest post, not "
         "arbitrarily high.\n"
-        "Pick a value, or type <code>/setmaxtokens &lt;1..8192&gt;</code>."
+        "⚠️ On Sonnet 5 / Opus 4.7+ this budget covers <b>thinking + the "
+        "translation together</b>, so it needs more headroom than the visible "
+        "text alone suggests.\n"
+        "Pick a value, or type <code>/setmaxtokens &lt;1..128000&gt;</code>."
+    ),
+    # ⚡ Effort — the modern-surface replacement for temperature as the "how hard
+    # should it think" knob.
+    "settings_btn_effort": "⚡ Effort",
+    "effort_title": (
+        "<b>⚡ Effort</b>\n"
+        "Current: {current}\n\n"
+        "How much thinking the model spends before answering:\n"
+        "• low — least thinking, fastest, cheapest. Right for literal "
+        "translation against a fixed prompt.\n"
+        "• medium — more deliberation; use if translations read shallow.\n"
+        "• high — most thorough; slowest and priciest.\n"
+        "💲 Cost: thinking is billed as output tokens and shares the max-tokens "
+        "budget, so raising this raises both price and truncation risk.\n"
+        "Pick a value, or type <code>/seteffort &lt;low|medium|high&gt;</code>."
+    ),
+    "effort_inert_note": (
+        "\n\n⚠️ <b>Not in use right now.</b> {model} does not take an effort "
+        "setting, so it is not sent. It applies again on Sonnet 5 / Opus 4.7+."
+    ),
+    "seteffort_usage": "❌ Usage: /seteffort &lt;low|medium|high&gt;",
+    "seteffort_invalid": "❌ effort must be one of {levels}",
+    "seteffort_ok": "✅ ANTHROPIC_EFFORT = {val}",
+    "seteffort_ignored": (
+        "\n\n⚠️ Saved, but the current model ({model}) does not take an effort "
+        "setting, so it is not sent. It applies again on Sonnet 5 / Opus 4.7+."
     ),
     "log_title": (
         "<b>🪵 Logs</b>\n"
@@ -284,6 +327,44 @@ _EN: Dict[str, str] = {
     "wiz_bad_int": "❌ That must be an integer channel id. Try again, or /cancel.",
     "wiz_dup_name": "❌ channel '{name}' already exists. Send a different name, or /cancel.",
     "wiz_cancelled": "✅ Cancelled. No channel was added.",
+    # Native chat picker (KeyboardButtonRequestChat → chat_shared). The picker is
+    # filtered to channels the bot is already a member of, which is exactly the
+    # condition /addchannel could previously only warn about after the fact.
+    "btn_pick_channel": "📡 Pick a channel…",
+    "wiz_pick_hint": (
+        "\n📡 Tap the button below to pick it from your channels — only ones the "
+        "bot can already read are listed. Or paste the numeric id."
+    ),
+    "wiz_picked": "📡 {title} → <code>{id}</code>\n",
+    # Copy-to-clipboard buttons (Bot API 7.11 CopyTextButton).
+    "btn_copy_model": "📋 Copy model id",
+    "channels_copy_hint": (
+        "\n📋 Tap a channel below to copy its <code>name src dst</code> — paste "
+        "it straight after <code>/editchannel</code>."
+    ),
+    # Native command menu (setMyCommands, scoped per admin chat).
+    "cmd_desc_menu": "Open the button menu",
+    "cmd_desc_status": "Uptime, connection, model, recent events",
+    "cmd_desc_stats": "Relay counts for the last N days",
+    "cmd_desc_channels": "List the configured channel pairs",
+    "cmd_desc_logs": "Show the most recent bot log lines",
+    "cmd_desc_prompt": "Show the current prompt template",
+    "cmd_desc_setmodel": "Set the translation model",
+    "cmd_desc_seteffort": "Set thinking effort (low/medium/high)",
+    "cmd_desc_setmaxtokens": "Set the max output tokens per translation",
+    "cmd_desc_settemp": "Set sampling temperature (older models only)",
+    "cmd_desc_setloglevel": "Set the log level, live",
+    "cmd_desc_setlang": "Switch the menu language",
+    "cmd_desc_setprompt": "Replace the prompt template",
+    "cmd_desc_addchannel": "Add a source/destination channel pair",
+    "cmd_desc_editchannel": "Change an existing pair's channel ids",
+    "cmd_desc_removechannel": "Stop relaying a channel pair",
+    "cmd_desc_admins": "List the bot's admins",
+    "cmd_desc_addadmin": "Grant admin access to a user",
+    "cmd_desc_removeadmin": "Revoke a user's admin access",
+    "cmd_desc_reload": "Re-read .env and the prompt template",
+    "cmd_desc_cancel": "Abort the step-by-step flow in progress",
+    "cmd_desc_help": "Show the command list",
 }
 
 
@@ -311,6 +392,7 @@ _BE: Dict[str, str] = {
     "btn_no_back": "◀️ Не, назад",
     "btn_add_admin": "➕ Дадаць адміна",
     "btn_cancel": "🚫 Скасаваць",
+    "kbd_placeholder": "Націсніце кнопку або ўвядзіце каманду",
     # Menu chrome.
     "menu_greeting": (
         "<b>📋 Меню бота-перакладчыка</b>\n"
@@ -338,19 +420,22 @@ _BE: Dict[str, str] = {
     "ai_title": (
         "<b>🤖 Налады ІІ</b>\n"
         "Мадэль: {model}\n"
-        "Тэмпература: {temp}\n"
-        "Макс. токенаў: {tokens}\n\n"
+        "Тэмпература: {temp}{temp_flag}\n"
+        "Макс. токенаў: {tokens}\n"
+        "Намаганні: {effort}{effort_flag}\n\n"
         "Наладзьце мадэль перакладу ніжэй."
     ),
+    "ai_inert_flag": " (ігнаруецца)",
     "model_title": (
         "<b>🤖 Мадэль</b>\n"
         "Бягучая: {current}\n\n"
         "Магчымасці і цана (USD за 1М токенаў, увод / вывад):\n"
-        "• Haiku 4.5 — $1 / $5 — найхутчэйшая і таннейшая (па змаўчанні)\n"
-        "• Sonnet 4.6 — $3 / $15 — збалансаваная\n"
-        "• Opus 4.8 — $5 / $25 — найбольш магутная, найдаражэйшая\n"
+        "• Haiku 4.5 — $1 / $5 — найхутчэйшая і таннейшая\n"
+        "• Sonnet 5 — $2 / $10 — збалансаваная (па змаўчанні)\n"
+        "• Opus 5 — $5 / $25 — найбольш магутная, найдаражэйшая\n"
         "Кожны пост білінгуецца за токены ўводу (крыніца + промпт) + вываду "
         "(пераклад), таму вышэйшы клас каштуе ў некалькі разоў больш за пост.\n"
+        "Шэры радок — тое, што ўжо ўключана.\n"
         "Выберыце прэсет або ўвядзіце <code>/setmodel &lt;id&gt;</code> для іншай."
     ),
     "temp_title": (
@@ -364,6 +449,11 @@ _BE: Dict[str, str] = {
         "💲 Кошт: няма — тэмпература змяняе фармулёўку, а не колькасць токенаў.\n"
         "Выберыце значэнне або ўвядзіце <code>/settemp &lt;0..1&gt;</code>."
     ),
+    "temp_inert_note": (
+        "\n\n⚠️ <b>Зараз не выкарыстоўваецца.</b> {model} адхіляе параметры "
+        "сэмплавання, таму тэмпература не адпраўляецца. Наладзьце ⚡ Намаганні "
+        "або /setmodel на мадэль, якая яе прымае."
+    ),
     "tokens_title": (
         "<b>🔢 Макс. токенаў</b>\n"
         "Бягучае: {current}\n\n"
@@ -374,7 +464,34 @@ _BE: Dict[str, str] = {
         "💲 Кошт: вы плаціце толькі за фактычна згенераваныя токены вываду па "
         "стаўцы вываду мадэлі — стаўце крыху вышэй за самы доўгі пост, а не "
         "адвольна шмат.\n"
-        "Выберыце значэнне або ўвядзіце <code>/setmaxtokens &lt;1..8192&gt;</code>."
+        "⚠️ На Sonnet 5 / Opus 4.7+ гэты бюджэт пакрывае <b>развагі і пераклад "
+        "разам</b>, таму патрабуе больш запасу, чым здаецца па бачным тэксце.\n"
+        "Выберыце значэнне або ўвядзіце <code>/setmaxtokens &lt;1..128000&gt;</code>."
+    ),
+    "settings_btn_effort": "⚡ Намаганні",
+    "effort_title": (
+        "<b>⚡ Намаганні</b>\n"
+        "Бягучыя: {current}\n\n"
+        "Колькі мадэль разважае перад адказам:\n"
+        "• low — найменш разваг, найхутчэй і танней. Тое, што трэба для "
+        "літаральнага перакладу па фіксаваным промпце.\n"
+        "• medium — больш разваг; калі пераклады выглядаюць павярхоўна.\n"
+        "• high — найбольш дбайна; найпавольней і найдаражэй.\n"
+        "💲 Кошт: развагі білінгуюцца як токены вываду і дзеляць бюджэт "
+        "max-tokens, таму павышэнне падымае і цану, і рызыку абразання.\n"
+        "Выберыце значэнне або ўвядзіце "
+        "<code>/seteffort &lt;low|medium|high&gt;</code>."
+    ),
+    "effort_inert_note": (
+        "\n\n⚠️ <b>Зараз не выкарыстоўваецца.</b> {model} не прымае наладу "
+        "намаганняў, таму яна не адпраўляецца. Дзейнічае на Sonnet 5 / Opus 4.7+."
+    ),
+    "seteffort_usage": "❌ Ужыванне: /seteffort &lt;low|medium|high&gt;",
+    "seteffort_invalid": "❌ намаганні мусяць быць адным з {levels}",
+    "seteffort_ok": "✅ ANTHROPIC_EFFORT = {val}",
+    "seteffort_ignored": (
+        "\n\n⚠️ Захавана, але бягучая мадэль ({model}) не прымае наладу "
+        "намаганняў, таму яна не адпраўляецца. Дзейнічае на Sonnet 5 / Opus 4.7+."
     ),
     "log_title": (
         "<b>🪵 Логі</b>\n"
@@ -541,6 +658,39 @@ _BE: Dict[str, str] = {
     "wiz_bad_int": "❌ Гэта мусіць быць цэлы id канала. Паспрабуйце зноў або /cancel.",
     "wiz_dup_name": "❌ канал '{name}' ужо існуе. Дашліце іншую назву або /cancel.",
     "wiz_cancelled": "✅ Скасавана. Канал не дададзены.",
+    "btn_pick_channel": "📡 Выбраць канал…",
+    "wiz_pick_hint": (
+        "\n📡 Націсніце кнопку ніжэй, каб выбраць яго са сваіх каналаў — у спісе "
+        "толькі тыя, якія бот ужо можа чытаць. Або ўстаўце лікавы id."
+    ),
+    "wiz_picked": "📡 {title} → <code>{id}</code>\n",
+    "btn_copy_model": "📋 Скапіяваць id мадэлі",
+    "channels_copy_hint": (
+        "\n📋 Націсніце канал ніжэй, каб скапіяваць <code>name src dst</code> — "
+        "устаўце адразу пасля <code>/editchannel</code>."
+    ),
+    "cmd_desc_menu": "Адкрыць меню кнопак",
+    "cmd_desc_status": "Час працы, падключэнне, мадэль, нядаўнія падзеі",
+    "cmd_desc_stats": "Лічыльнікі рэляў за апошнія N дзён",
+    "cmd_desc_channels": "Спіс наладжаных пар каналаў",
+    "cmd_desc_logs": "Апошнія радкі лога бота",
+    "cmd_desc_prompt": "Паказаць бягучы шаблон промпта",
+    "cmd_desc_setmodel": "Задаць мадэль перакладу",
+    "cmd_desc_seteffort": "Задаць намаганні разваг (low/medium/high)",
+    "cmd_desc_setmaxtokens": "Задаць макс. токенаў вываду на пераклад",
+    "cmd_desc_settemp": "Задаць тэмпературу (толькі старыя мадэлі)",
+    "cmd_desc_setloglevel": "Задаць узровень лагавання, наўпрост",
+    "cmd_desc_setlang": "Пераключыць мову меню",
+    "cmd_desc_setprompt": "Замяніць шаблон промпта",
+    "cmd_desc_addchannel": "Дадаць пару крыніца/прызначэнне",
+    "cmd_desc_editchannel": "Змяніць id каналаў існуючай пары",
+    "cmd_desc_removechannel": "Спыніць рэляй пары каналаў",
+    "cmd_desc_admins": "Спіс адмінаў бота",
+    "cmd_desc_addadmin": "Даць карыстальніку доступ адміна",
+    "cmd_desc_removeadmin": "Адабраць доступ адміна",
+    "cmd_desc_reload": "Перачытаць .env і шаблон промпта",
+    "cmd_desc_cancel": "Спыніць пакрокавы працэс",
+    "cmd_desc_help": "Паказаць спіс камандаў",
 }
 
 

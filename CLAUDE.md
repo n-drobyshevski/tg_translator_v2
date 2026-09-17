@@ -178,10 +178,48 @@ receives DMs directly — no PTB polling is involved.
 - `services/admin_commands.py` registers one `filters.private & _admin_filter()`
   handler. The dispatch entry point `handle_command(msg, ...)` is deliberately
   free of Pyrogram plumbing so it's unit-testable with a fake message. Commands:
-  read-only `/help /status /stats /config /channels /prompt`; writable
-  `/setmodel /settemp /setmaxtokens /setloglevel /setprompt`; channel management
-  `/addchannel /editchannel /removechannel`; and `/reload`. Replies are
+  read-only `/help /status /stats /config /channels /prompt /logs`; writable
+  `/setmodel /settemp /setmaxtokens /seteffort /setloglevel /setprompt /setlang`;
+  channel management `/addchannel /editchannel /removechannel`; admin management
+  `/admins /addadmin /removeadmin`; plus `/reload` and `/cancel`. Replies are
   HTML-escaped and truncated under the 4096-char cap.
+- **Buttons, not just commands** (`services/admin_menu.py`): a persistent reply
+  keyboard whose taps arrive as *labels* (`resolve_button_label` maps them back
+  to commands via `BUTTON_KEYS`, across every locale) plus an inline menu tree
+  navigated by `on_callback_query`. All of it routes back into the same `_cmd_*`
+  helpers — no business logic is duplicated. The pure layer (`build_menu`,
+  `handle_callback`, `resolve_button_label`) is Pyrogram-free and unit-tested
+  with plain strings; `to_inline_markup` / `to_reply_markup` are the only glue.
+  Operator strings live in `services/admin_i18n.py` (`en` + partial `be`, falling
+  back to `en`), per-admin language in `services/admin_prefs.py`.
+- **Newer Bot API button kinds are encoded in the `callback_data` slot**, not by
+  widening the `(label, data)` pair every menu and test is written against:
+  `copy:<text>` → `CopyTextButton` (7.11) and `x:<data>` → `DisabledButton`
+  (10.2), decoded in `to_inline_markup`; destructive heads (`rmchok`, `rmadminok`)
+  render `ButtonStyle.DANGER` (9.4). Telegram fires no callback query for either
+  kind, so `handle_callback` never sees those prefixes. **Menu sends go through
+  `send_with_markup`**, which retries once with `plain=True` if Telegram refuses
+  the markup — a disabled button then degrades to the ordinary button it wraps
+  (`x:` carries the action it would have performed) and copy buttons drop out.
+  None of this chrome can be exercised against live Telegram from CI, so the
+  fallback is what keeps an unsupported button kind from taking out the menu.
+- **Preset lists track `config.py`, not the docs.** `MODEL_PRESETS` /
+  `TOKEN_PRESETS` / `EFFORT_PRESETS` went stale once (the menu still said
+  "Haiku 4.5 (default)" after the default became Sonnet 5), so which preset is
+  active is derived at render time and `test_admin_modern_ui.py` asserts each
+  default appears in its list. Temperature and effort are **mutually exclusive**
+  — each request surface takes one and rejects the other (see
+  `model_capabilities`) — so the AI menu flags whichever the live model ignores
+  and greys out its presets rather than offering buttons that change nothing.
+- **Native command menu:** `publish_admin_commands(pyro)` runs once in
+  `main_async` *after* `pyro.start()` (the client must be connected) and pushes
+  `COMMAND_SPECS` via `set_bot_commands` with **`BotCommandScopeChat` per admin**
+  — never globally, because the command list maps the whole control surface and a
+  stranger who DMs the bot should not be handed it. It also points the ☰ button
+  at that list (`MenuButtonCommands`). Every failure is a logged warning: a bot
+  that can't set its command menu must still relay. Switching language
+  (typed `/setlang` or the inline button) republishes for that admin, since the
+  scope stores one fixed language per chat.
 - **Persistence:** writable settings are saved to the shared root `.env` via
   `services/env_store.py` (`set_env_var`/`unset_env_var` — atomic temp-file +
   `os.replace`, preserves comments/secrets/ordering, only the target key is
@@ -195,8 +233,19 @@ receives DMs directly — no PTB polling is involved.
   (also used by `app/admin_prompt.py`).
 - **`/addchannel`** writes the leaf vars first and appends the name to
   `LOGICAL_CHANNELS` **last**, then reloads, so a half-written pair can't make
-  `reload()` raise. Caveat surfaced in the reply: the bot must already be an
-  admin/member of the source channel or Telegram delivers nothing.
+  `reload()` raise. The bot must already be an admin/member of the source channel
+  or Telegram delivers nothing — the reply still warns about it for the typed
+  path, but the button path now makes it unmakeable: the add-channel wizard
+  (`services/admin_wizard.py`) offers Telegram's **native chat picker**
+  (`KeyboardButtonRequestChat` with `chat_is_channel` + `bot_is_member`), so only
+  channels the bot can already read are listed. A pick arrives as a `chat_shared`
+  service message and is fed into `admin_wizard.feed()` exactly as a typed id
+  would be, so both routes share one validation path and one commit. Typed ids
+  still work. `admin_wizard.current_step()` is what the Pyrogram layer reads to
+  decide which keyboard a reply needs; the picker keyboard is one-shot, so
+  finishing or cancelling restores the main menu keyboard. The picker's Cancel is
+  a *label*, so it must stay mapped in `BUTTON_KEYS` or it gets swallowed as the
+  wizard's next answer.
 - **Error forwarding:** `services/error_sender.send_alert` (httpx → Bot API,
   throttled ~300s per signature `key`) now reads `ADMIN_ALERT_CHAT_ID` **or**
   falls back to `ADMIN_CHAT_ID` — previously it was a silent no-op since `.env`
@@ -256,7 +305,9 @@ The manager and aggregator code is heavily instrumented with `print(...)`
 
 `translate_html` calls the model in `CONFIG.ANTHROPIC_MODEL` (env `ANTHROPIC_MODEL`,
 default **`claude-sonnet-5`**). `ANTHROPIC_MAX_TOKENS` (8000),
-`ANTHROPIC_TEMPERATURE` (0) and `ANTHROPIC_EFFORT` (`low`) are env-overridable.
+`ANTHROPIC_TEMPERATURE` (0) and `ANTHROPIC_EFFORT` (`low`) are env-overridable,
+and all four are settable live from the admin DM (`/setmodel`, `/setmaxtokens`,
+`/settemp`, `/seteffort`, or the 🤖 AI Settings menu).
 The previous default, `claude-haiku-4-5`, is still served but carries a published
 retirement floor of 2026-10-15.
 
@@ -296,10 +347,15 @@ Three traps this code exists to avoid, all of which fail on *every* message:
 > what makes the next such removal a failing test instead of a production outage.
 
 > **Test-isolation caveat:** `env_store.set_env_var` writes to `os.environ` as well
-> as `.env`, so any test exercising `/setmodel` (or another `_persist_and_reload`
+> as `.env` — by design, since that is how `CONFIG.reload()` applies a DM change
+> live — so any test exercising `/setmodel` (or another `_persist_and_reload`
 > command) leaks that value into every later test in the run. Tests that depend on
 > the model must pin `CONFIG.ANTHROPIC_MODEL` themselves rather than trust the
-> ambient default.
+> ambient default. `test_admin_modern_ui.py` instead uses an autouse fixture that
+> snapshots and restores `os.environ`, which is the pattern to copy: it needs the
+> *shipped* defaults to check that the menu presets still match them, and it also
+> stops its own `/seteffort` tests leaking onward. There is still no suite-wide
+> guard — this has now caused a pass-alone/fail-in-suite bug twice.
 
 The system/instructions/example prompt lives in
 `translator/prompt_template.txt` (loaded via `config.load_prompt_template`) and

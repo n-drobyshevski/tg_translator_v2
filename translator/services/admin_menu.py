@@ -40,6 +40,7 @@ from translator.services import (
     admin_wizard,
 )
 from translator.services.admin_i18n import t
+from translator.utils.model_capabilities import supports_effort, supports_sampling_params
 
 log = logging.getLogger("ADMIN.MENU")
 
@@ -47,6 +48,25 @@ log = logging.getLogger("ADMIN.MENU")
 # rows. Reply-keyboard specs are just lists of rows of plain labels.
 Row = List[Tuple[str, str]]
 Rows = List[Row]
+
+# --- Reserved callback_data heads ---------------------------------------------
+#
+# Two newer inline-button kinds carry no callback at all, so rather than widen
+# the (label, data) pair — which every menu and every test is written against —
+# they are encoded as reserved prefixes in the data slot and decoded in
+# :func:`to_inline_markup`. Telegram fires no callback query for either, so
+# ``handle_callback`` never sees them.
+#
+#   ``copy:<text>``  → CopyTextButton (Bot API 7.11): copies <text> on tap.
+#   ``x:<data>``     → DisabledButton (Bot API 10.2): greyed out, not tappable.
+#                      <data> is what the button *would* have done, which is
+#                      what the plain fallback below re-enables.
+COPY_PREFIX = "copy:"
+DISABLED_PREFIX = "x:"
+
+# Destructive confirmations render red (Bot API 9.4 button styles). Keyed by the
+# data head so the pure menu layer stays free of presentation concerns.
+_DANGER_HEADS = frozenset({"rmchok", "rmadminok"})
 
 
 # --- Persistent reply keyboard ------------------------------------------------
@@ -67,6 +87,9 @@ BUTTON_KEYS = {
     # Shown on the temporary "add admin" keyboard; resolves to /menu so tapping
     # it cancels the add-flow and restores the main keyboard.
     "btn_back_to_menu": "/menu",
+    # Shown on the temporary channel-picker keyboard. Without this mapping the
+    # tapped label would be read as the wizard's next answer instead of a cancel.
+    "btn_cancel": "/cancel",
 }
 
 # Reverse map built across *all* locales so a tapped label resolves to its
@@ -109,13 +132,20 @@ def build_reply_keyboard(lang: str = "en") -> List[List[str]]:
 
 # --- Inline settings menu tree ------------------------------------------------
 
+# Presets track the real defaults in ``translator/config.py`` — they went stale
+# once before, when the default moved to Sonnet 5 but this list still advertised
+# "Haiku 4.5 (default)". Which one is active is now derived at render time
+# (see ``_preset_rows``) instead of being written into a label.
 MODEL_PRESETS = [
-    ("Haiku 4.5 (default)", "claude-haiku-4-5"),
-    ("Sonnet 4.6", "claude-sonnet-4-6"),
-    ("Opus 4.8", "claude-opus-4-8"),
+    ("Haiku 4.5", "claude-haiku-4-5"),
+    ("Sonnet 5", "claude-sonnet-5"),
+    ("Opus 5", "claude-opus-5"),
 ]
 TEMP_PRESETS = ["0", "0.3", "0.5", "0.7", "1.0"]
-TOKEN_PRESETS = ["1500", "2000", "4000", "8192"]
+# max_tokens now covers thinking + response together and defaults to 8000, so
+# the old 1500/2000/4000/8192 ladder no longer brackets the default at all.
+TOKEN_PRESETS = ["4000", "8000", "16000", "32000"]
+EFFORT_PRESETS = ["low", "medium", "high"]
 
 
 def _back_to_settings(lang: str = "en") -> Row:
@@ -132,6 +162,8 @@ def _back_to_channels(lang: str = "en") -> Row:
 
 # Identifier echoed back in ``users_shared.button_id`` for the add-admin picker.
 ADD_ADMIN_BUTTON_ID = 1
+# ...and in ``chat_shared.button_id`` for the add-channel picker.
+REQUEST_CHANNEL_BUTTON_ID = 2
 
 
 @dataclass
@@ -155,14 +187,44 @@ def _settings_menu(lang: str = "en") -> Tuple[str, Rows]:
     return title, rows
 
 
+def _preset_rows(presets: List[Tuple[str, str]], kind: str, current) -> Rows:
+    """One button per (label, value) preset, the active one rendered as disabled.
+
+    Greying out the current value is the cheapest possible "you are here": the
+    operator can see what is live without reading the title, and can't waste a
+    round-trip re-selecting it. ``to_inline_markup`` re-enables these if the
+    client/server rejects disabled buttons, so nothing becomes unreachable.
+    """
+    return [
+        [
+            (
+                label,
+                (DISABLED_PREFIX if str(current) == str(value) else "")
+                + f"set:{kind}:{value}",
+            )
+        ]
+        for label, value in presets
+    ]
+
+
 def _ai_menu(lang: str = "en") -> Tuple[str, Rows]:
-    """The dedicated AI Settings submenu: model / temperature / max-tokens / cost."""
+    """The dedicated AI Settings submenu: model / temperature / tokens / effort.
+
+    Temperature and effort are mutually exclusive in practice — each request
+    surface takes one and rejects the other — so the summary flags whichever one
+    the active model ignores rather than showing two knobs that look equal.
+    """
+    model = str(CONFIG.ANTHROPIC_MODEL)
+    inert = t("ai_inert_flag", lang)
     title = t(
         "ai_title",
         lang,
-        model=html.escape(str(CONFIG.ANTHROPIC_MODEL)),
+        model=html.escape(model),
         temp=CONFIG.ANTHROPIC_TEMPERATURE,
+        temp_flag="" if supports_sampling_params(model) else inert,
         tokens=CONFIG.ANTHROPIC_MAX_TOKENS,
+        effort=html.escape(str(CONFIG.ANTHROPIC_EFFORT)),
+        effort_flag="" if supports_effort(model) else inert,
     )
     rows: Rows = [
         [(t("settings_btn_model", lang), "nav:model")],
@@ -170,6 +232,7 @@ def _ai_menu(lang: str = "en") -> Tuple[str, Rows]:
             (t("settings_btn_temp", lang), "nav:temp"),
             (t("settings_btn_tokens", lang), "nav:tokens"),
         ],
+        [(t("settings_btn_effort", lang), "nav:effort")],
         [(t("btn_prompt", lang), "nav:prompt")],
         # AI Settings is a top-level menu (peer of Settings), so it closes
         # rather than navigating "back" to a parent.
@@ -190,28 +253,62 @@ def _prompt_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 
 def _model_menu(lang: str = "en") -> Tuple[str, Rows]:
-    title = t("model_title", lang, current=CONFIG.ANTHROPIC_MODEL)
-    rows: Rows = [[(label, f"set:model:{value}")] for label, value in MODEL_PRESETS]
+    model = str(CONFIG.ANTHROPIC_MODEL)
+    title = t("model_title", lang, current=html.escape(model))
+    rows: Rows = _preset_rows(MODEL_PRESETS, "model", model)
+    # The live id is often a value no preset covers (/setmodel takes anything),
+    # and it's what an operator needs to paste when reporting or reverting.
+    rows.append([(t("btn_copy_model", lang), COPY_PREFIX + model)])
     rows.append(_back_to_ai(lang))
     return title, rows
 
 
 def _temp_menu(lang: str = "en") -> Tuple[str, Rows]:
+    model = str(CONFIG.ANTHROPIC_MODEL)
     title = t("temp_title", lang, current=CONFIG.ANTHROPIC_TEMPERATURE)
-    rows: Rows = [
-        [(v, f"set:temp:{v}") for v in TEMP_PRESETS],
-        _back_to_ai(lang),
+    live = supports_sampling_params(model)
+    if not live:
+        title += t("temp_inert_note", lang, model=html.escape(model))
+    # On the modern surface every value is equally ignored, so the whole row is
+    # greyed out — showing five tappable presets that change nothing is worse
+    # than showing none.
+    row: Row = [
+        (
+            v,
+            (DISABLED_PREFIX if not live else "") + f"set:temp:{v}",
+        )
+        for v in TEMP_PRESETS
     ]
-    return title, rows
+    return title, [row, _back_to_ai(lang)]
 
 
 def _tokens_menu(lang: str = "en") -> Tuple[str, Rows]:
-    title = t("tokens_title", lang, current=CONFIG.ANTHROPIC_MAX_TOKENS)
-    rows: Rows = [
-        [(v, f"set:tokens:{v}") for v in TOKEN_PRESETS],
-        _back_to_ai(lang),
+    current = str(CONFIG.ANTHROPIC_MAX_TOKENS)
+    title = t("tokens_title", lang, current=current)
+    row: Row = [
+        (v, (DISABLED_PREFIX if v == current else "") + f"set:tokens:{v}")
+        for v in TOKEN_PRESETS
     ]
-    return title, rows
+    return title, [row, _back_to_ai(lang)]
+
+
+def _effort_menu(lang: str = "en") -> Tuple[str, Rows]:
+    """Thinking effort — the modern surface's replacement for temperature."""
+    model = str(CONFIG.ANTHROPIC_MODEL)
+    current = str(CONFIG.ANTHROPIC_EFFORT)
+    title = t("effort_title", lang, current=html.escape(current))
+    live = supports_effort(model)
+    if not live:
+        title += t("effort_inert_note", lang, model=html.escape(model))
+    row: Row = [
+        (
+            v,
+            (DISABLED_PREFIX if (not live or v == current) else "")
+            + f"set:effort:{v}",
+        )
+        for v in EFFORT_PRESETS
+    ]
+    return title, [row, _back_to_ai(lang)]
 
 
 def _log_menu(lang: str = "en") -> Tuple[str, Rows]:
@@ -245,11 +342,19 @@ def _lang_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 def _channels_menu(lang: str = "en") -> Tuple[str, Rows]:
     title = admin_commands._cmd_channels(lang) + t("channels_menu_hint", lang)
-    rows: Rows = [
-        [(t("btn_add_channel_pair", lang), "addch:start")],
-        [(t("settings_btn_rmch", lang), "nav:rmch")],
-        _back_to_settings(lang),
-    ]
+    rows: Rows = [[(t("btn_add_channel_pair", lang), "addch:start")]]
+    # One copy button per pair, carrying the exact argument list /editchannel
+    # wants. Selecting a -100… id out of a <code> block on a phone is the kind of
+    # papercut that makes operators avoid the DM surface entirely.
+    for name in admin_commands._logical_names():
+        src = CONFIG.channels[name]
+        dst = CONFIG.channels.get(name + "_en")
+        dst_id = dst.channel_id if dst else ""
+        rows.append([(f"📋 {name}", f"{COPY_PREFIX}{name} {src.channel_id} {dst_id}")])
+    if len(rows) > 1:
+        title += t("channels_copy_hint", lang)
+    rows.append([(t("settings_btn_rmch", lang), "nav:rmch")])
+    rows.append(_back_to_settings(lang))
     return title, rows
 
 
@@ -324,6 +429,8 @@ def build_menu(menu_id: str, lang: str = "en") -> Tuple[str, Rows]:
         return _temp_menu(lang)
     if menu_id == "tokens":
         return _tokens_menu(lang)
+    if menu_id == "effort":
+        return _effort_menu(lang)
     if menu_id == "log":
         return _log_menu(lang)
     if menu_id == "logsview":
@@ -405,6 +512,7 @@ def handle_callback(
             "model": admin_commands._cmd_setmodel,
             "temp": admin_commands._cmd_settemp,
             "tokens": admin_commands._cmd_setmaxtokens,
+            "effort": admin_commands._cmd_seteffort,
             "log": admin_commands._cmd_setloglevel,
         }
         fn = setters.get(kind)
@@ -441,25 +549,122 @@ def handle_callback(
 # --- Pyrogram glue (the only client-aware part) -------------------------------
 
 
-def to_inline_markup(rows: Rows):
-    """Convert a rows spec into a Pyrogram ``InlineKeyboardMarkup``."""
-    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+def _to_button(label: str, data: str, *, plain: bool):
+    """One (label, data) pair → an ``InlineKeyboardButton``, or None if dropped.
 
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(label, callback_data=cd) for label, cd in row]
-            for row in rows
+    ``plain`` degrades the newer button kinds for a client or server that won't
+    take them: a disabled button becomes the ordinary button it wraps, and a copy
+    button — which has no equivalent — is dropped.
+    """
+    from pyrogram import enums
+    from pyrogram.types import CopyTextButton, DisabledButton, InlineKeyboardButton
+
+    if data.startswith(COPY_PREFIX):
+        if plain:
+            return None
+        return InlineKeyboardButton(
+            label, copy_text=CopyTextButton(text=data[len(COPY_PREFIX) :])
+        )
+
+    if data.startswith(DISABLED_PREFIX):
+        inner = data[len(DISABLED_PREFIX) :]
+        if plain:
+            return InlineKeyboardButton(label, callback_data=inner)
+        return InlineKeyboardButton(label, disabled=DisabledButton())
+
+    style = enums.ButtonStyle.DEFAULT
+    if not plain and data.split(":", 1)[0] in _DANGER_HEADS:
+        style = enums.ButtonStyle.DANGER
+    return InlineKeyboardButton(label, callback_data=data, style=style)
+
+
+def to_inline_markup(rows: Rows, *, plain: bool = False):
+    """Convert a rows spec into a Pyrogram ``InlineKeyboardMarkup``.
+
+    ``plain=True`` strips the Bot API 9.4/10.2 chrome (styles, disabled and copy
+    buttons) and keeps only plain callback buttons. It is the retry shape used by
+    :func:`send_with_markup` when the styled markup is refused, so an unsupported
+    button kind costs the decoration rather than the whole admin surface.
+    """
+    from pyrogram.types import InlineKeyboardMarkup
+
+    keyboard = []
+    for row in rows:
+        buttons = [
+            b
+            for b in (_to_button(label, cd, plain=plain) for label, cd in row)
+            if b is not None
         ]
-    )
+        if buttons:  # a copy-only row disappears entirely in plain mode
+            keyboard.append(buttons)
+    return InlineKeyboardMarkup(keyboard)
 
 
-def to_reply_markup(spec: List[List[str]]):
+async def send_with_markup(send, text: str, rows: Rows, **kwargs):
+    """``await send(text, reply_markup=…)``, retrying once without new chrome.
+
+    Disabled buttons and button styles are recent Bot API additions that can't be
+    exercised against live Telegram from CI, so a rejection must not be able to
+    take out the menu it decorates. Any failure retries with ``plain=True``; if
+    that fails too the error propagates to the caller's own handler.
+    """
+    from pyrogram.errors import MessageNotModified
+
+    try:
+        return await send(text, reply_markup=to_inline_markup(rows), **kwargs)
+    except MessageNotModified:
+        raise  # a real outcome (identical content), not a markup problem
+    except Exception:
+        log.warning("inline markup refused; retrying without styled buttons", exc_info=True)
+        return await send(text, reply_markup=to_inline_markup(rows, plain=True), **kwargs)
+
+
+def to_reply_markup(spec: List[List[str]], lang: str = "en"):
     """Convert a label-row spec into a persistent ``ReplyKeyboardMarkup``."""
     from pyrogram.types import KeyboardButton, ReplyKeyboardMarkup
 
     return ReplyKeyboardMarkup(
         [[KeyboardButton(label) for label in row] for row in spec],
         resize_keyboard=True,
+        # Keep the menu open instead of collapsing to the "⌨" icon after a tap —
+        # the admin surface is a control panel, not a one-shot prompt.
+        is_persistent=True,
+        placeholder=t("kbd_placeholder", lang),
+    )
+
+
+def build_channel_picker_keyboard(lang: str = "en"):
+    """Temporary reply keyboard whose first button opens Telegram's chat picker.
+
+    ``chat_is_channel`` + ``bot_is_member`` mean Telegram only offers channels the
+    bot can actually read, so the "add a channel the bot was never added to"
+    mistake — which used to surface as a warning in the /addchannel reply and
+    then as silence at runtime — can no longer be made.
+    """
+    from pyrogram.types import (
+        KeyboardButton,
+        KeyboardButtonRequestChat,
+        ReplyKeyboardMarkup,
+    )
+
+    return ReplyKeyboardMarkup(
+        [
+            [
+                KeyboardButton(
+                    t("btn_pick_channel", lang),
+                    request_chat=KeyboardButtonRequestChat(
+                        button_id=REQUEST_CHANNEL_BUTTON_ID,
+                        chat_is_channel=True,
+                        bot_is_member=True,
+                        request_title=True,
+                        request_username=True,
+                    ),
+                )
+            ],
+            [KeyboardButton(t("btn_cancel", lang))],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
 
 
@@ -580,13 +785,18 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
             await cq.answer(result.alert or "")
         except Exception:
             log.exception("callback answer failed")
-        markup = to_inline_markup(result.rows) if result.rows else None
-        try:
-            await cq.edit_message_text(
-                admin_commands._truncate(result.text),
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=markup,
+        async def _edit(text, **kw):
+            return await cq.edit_message_text(
+                text, parse_mode=enums.ParseMode.HTML, **kw
             )
+
+        try:
+            if result.rows:
+                await send_with_markup(
+                    _edit, admin_commands._truncate(result.text), result.rows
+                )
+            else:
+                await _edit(admin_commands._truncate(result.text), reply_markup=None)
         except MessageNotModified:
             pass  # re-tapping a nav button that shows identical content
         except Exception:
@@ -600,9 +810,13 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
                 await cq.message.reply_text(
                     t("lang_switched", new_lang),
                     parse_mode=enums.ParseMode.HTML,
-                    reply_markup=to_reply_markup(build_reply_keyboard(new_lang)),
+                    reply_markup=to_reply_markup(build_reply_keyboard(new_lang), new_lang),
                 )
             except Exception:
                 log.exception("failed to refresh reply keyboard after setlang")
+            # The "/" autocomplete is published per chat in a fixed language, so
+            # it would otherwise stay in the old one until the next restart.
+            if uid is not None:
+                await admin_commands.publish_commands_for(pyro, uid)
 
     return _on_callback
