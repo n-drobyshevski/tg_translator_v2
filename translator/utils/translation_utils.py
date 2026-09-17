@@ -90,7 +90,14 @@ async def translate_html(
     kwargs = dict(
         model=CONFIG.ANTHROPIC_MODEL,
         max_tokens=CONFIG.ANTHROPIC_MAX_TOKENS,
-        temperature=CONFIG.ANTHROPIC_TEMPERATURE,
+        # anthropic 1.x dropped `temperature` (and top_p/top_k) from the
+        # messages.create() signature — passing it directly is a TypeError, and
+        # TypeError is in run_with_retries' NON_RETRYABLE tuple, so it would fail
+        # every translation permanently with no retry. The parameter is gone from
+        # the SDK signature, not from the API: claude-haiku-4-5 still honours it,
+        # and literal translation depends on temperature=0 being deterministic,
+        # so pass it through extra_body (merged into the request JSON as-is).
+        extra_body={"temperature": CONFIG.ANTHROPIC_TEMPERATURE},
         system=[
             {
                 "type": "text",

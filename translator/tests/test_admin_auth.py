@@ -13,6 +13,7 @@ import types
 import pytest
 
 from pyrogram import enums
+from pyrogram.types import Message
 
 from translator.config import CONFIG
 from translator.services import admin_commands
@@ -23,13 +24,22 @@ def _user(uid):
 
 
 def _msg(uid, *, private=True):
-    """A minimal Pyrogram-message stand-in for filter evaluation."""
+    """A minimal Pyrogram-message stand-in for filter evaluation.
+
+    The object must be a real ``Message`` instance, not a duck-typed
+    ``SimpleNamespace``: since kurigram 2.2.26 the built-in filters read the chat
+    and sender through helpers that ``isinstance``-check the update against the
+    update types that actually carry those fields, so a stand-in that merely has
+    a ``.chat`` attribute makes ``filters.private`` return False. ``__new__``
+    skips the heavy constructor; the nested ``chat`` / ``from_user`` are only
+    attribute-read, so they can stay simple namespaces.
+    """
     chat_type = enums.ChatType.PRIVATE if private else enums.ChatType.CHANNEL
-    return types.SimpleNamespace(
-        from_user=_user(uid) if uid is not None else None,
-        sender_chat=None,
-        chat=types.SimpleNamespace(id=uid or 0, type=chat_type),
-    )
+    msg = Message.__new__(Message)
+    msg.from_user = _user(uid) if uid is not None else None
+    msg.sender_chat = None
+    msg.chat = types.SimpleNamespace(id=uid or 0, type=chat_type)
+    return msg
 
 
 # --------------------------------------------------------------------------- #

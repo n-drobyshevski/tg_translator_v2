@@ -1,4 +1,5 @@
 import html
+import os
 import re
 from typing import Any, List, Optional
 
@@ -22,21 +23,40 @@ _PRE_LANG_RE = re.compile(r'<pre language="([^"]*)">(.*?)</pre>', re.DOTALL)
 _PRE_OPEN_RE = re.compile(r"<pre\b[^>]*>")
 
 
+def _preserve_custom_emoji() -> bool:
+    """Whether ``<tg-emoji>`` should reach Telegram instead of being flattened.
+
+    Off by default, and that default is the safe one: Bot API 9.4 (2026-02-09)
+    lets bots put custom emoji in messages, but only emoji the bot may actually
+    use — a mirrored post's emoji generally come from the *source* channel, and
+    Telegram rejects the whole message if the bot can't use one. Worth turning on
+    only when the destination channel's emoji belong to the bot (e.g. a branded
+    channel with its own sticker set). Same env var as the admin app's sanitizer.
+    """
+    return os.getenv("PRESERVE_CUSTOM_EMOJI", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+    )
+
+
 def _to_bot_api_html(rendered: str) -> str:
     """Normalize kurigram-rendered HTML to the subset the Bot API accepts.
 
     - ``<spoiler>`` → ``<tg-spoiler>`` (Bot API spelling).
-    - Drop ``<tg-emoji>`` / ``<tg-time>`` wrappers, keeping their inner text.
-      This is intentional, not a gap: a bot can't re-send a custom emoji it
-      doesn't own, and the Bot API HTML dialect has no date tag — so the inner
-      fallback text (the emoji glyph / the formatted date) is the correct output.
+    - Drop ``<tg-time>`` wrappers, keeping their inner text: the Bot API HTML
+      dialect has no date tag, so the formatted date is the correct output.
+    - Drop ``<tg-emoji>`` the same way unless ``PRESERVE_CUSTOM_EMOJI`` is set
+      (see ``_preserve_custom_emoji`` for why flattening is the safe default).
     - ``<pre language="x">…</pre>`` → ``<pre><code class="language-x">…</code></pre>``
       so code-block syntax highlighting survives (the Bot API's supported form);
       bare/attribute-only ``<pre>`` tags are flattened to ``<pre>``.
     """
     rendered = _SPOILER_OPEN_RE.sub("<tg-spoiler>", rendered)
     rendered = _SPOILER_CLOSE_RE.sub("</tg-spoiler>", rendered)
-    rendered = _TG_EMOJI_RE.sub(r"\1", rendered)
+    if not _preserve_custom_emoji():
+        rendered = _TG_EMOJI_RE.sub(r"\1", rendered)
     rendered = _TG_TIME_RE.sub(r"\1", rendered)
     rendered = _PRE_LANG_RE.sub(
         lambda m: f'<pre><code class="language-{html.escape(m.group(1), quote=True)}">'

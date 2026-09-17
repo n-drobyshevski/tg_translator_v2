@@ -44,11 +44,59 @@ def build_link_preview_options() -> dict:
         return {"is_disabled": True}
     options = {
         "prefer_large_media": _env_flag("LINK_PREVIEW_PREFER_LARGE_MEDIA", True),
+        "prefer_small_media": _env_flag("LINK_PREVIEW_PREFER_SMALL_MEDIA", False),
         "show_above_text": _env_flag("LINK_PREVIEW_SHOW_ABOVE_TEXT", False),
     }
     pinned_url = os.getenv("LINK_PREVIEW_URL")
     if pinned_url:
         options["url"] = pinned_url
+    return options
+
+
+def _as_form_value(value: Any) -> Any:
+    """Encode one option value for a *form-encoded* Bot API body.
+
+    Nested objects go as JSON strings (the treatment ``link_preview_options``
+    already gets on the edit path), and booleans must be lowercase JSON literals —
+    httpx would otherwise form-encode Python's ``True``, which is not one of the
+    values Telegram documents for Boolean fields.
+    """
+    if isinstance(value, (dict, list, bool)):
+        return json.dumps(value)
+    return value
+
+
+def build_reply_parameters(message_id: Optional[int]) -> Optional[dict]:
+    """Build the ReplyParameters object (Bot API 7.0+) for a reply, or None.
+
+    Replaces the legacy scalar ``reply_to_message_id``. ``allow_sending_without_reply``
+    is a behaviour fix, not just modernization: a long-caption post is relayed as
+    media + a reply carrying the remainder, and if the media is deleted in the gap
+    between the two calls the old parameter made Telegram reject the remainder
+    outright, silently losing the bulk of the message. With this flag the remainder
+    is posted unlinked instead of lost.
+    """
+    if not message_id:
+        return None
+    return {"message_id": message_id, "allow_sending_without_reply": True}
+
+
+def build_send_options(*, with_caption: bool = False) -> dict:
+    """Common, env-gated options shared by every send call.
+
+    Kept in one place so sendMessage / sendPhoto / sendMediaGroup / the edit paths
+    can't drift apart. All default to the historical behaviour (everything off).
+
+    ``show_caption_above_media`` (Bot API 7.10) only applies to captioned media, so
+    it is emitted only when ``with_caption`` is set.
+    """
+    options = {}
+    if _env_flag("PROTECT_CONTENT", False):
+        options["protect_content"] = True
+    if _env_flag("DISABLE_NOTIFICATION", False):
+        options["disable_notification"] = True
+    if with_caption and _env_flag("SHOW_CAPTION_ABOVE_MEDIA", False):
+        options["show_caption_above_media"] = True
     return options
 
 
@@ -292,10 +340,12 @@ class TelegramSender:
             # Reply to the photo so a split long-caption post stays grouped. Only
             # the first chunk needs the linkage; keeping it on every chunk is
             # harmless (all point at the same photo) and simpler.
-            if reply_to_message_id:
-                body["reply_to_message_id"] = reply_to_message_id
-            # JSON body -> link_preview_options is a nested object directly.
+            # JSON body -> reply_parameters / link_preview_options nest directly.
+            reply_parameters = build_reply_parameters(reply_to_message_id)
+            if reply_parameters:
+                body["reply_parameters"] = reply_parameters
             body["link_preview_options"] = build_link_preview_options()
+            body.update(build_send_options())
             success, r, err = await self._post_telegram(url, json=body)
             exception_message = None
             if not success or r is None:
@@ -349,12 +399,17 @@ class TelegramSender:
         media_value: str,
         caption: str,
         recorder: EventRecorder,
+        supports_caption: bool = True,
     ):
-        """Send a media message (photo/video/document) via the Bot API.
+        """Send a media message (photo/video/document/…) via the Bot API.
 
         The pyrogram listener runs as a *bot* session, so the source ``file_id``
         is valid for the Bot API and can be re-sent directly. Captions support
         HTML; link previews don't apply to media.
+
+        ``supports_caption=False`` is for ``sendVideoNote``, the one media endpoint
+        that accepts no ``caption`` at all — sending one is an API error, so the
+        caller posts the translated text as a follow-up reply instead.
         """
         target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
         if not dest_channel_id:
@@ -377,8 +432,13 @@ class TelegramSender:
             media_field: media_value,
             "parse_mode": "HTML",
         }
-        if sanitized_caption:
+        has_caption = bool(sanitized_caption) and supports_caption
+        if has_caption:
             data["caption"] = sanitized_caption
+        # Form-encoded body -> booleans/objects must be JSON-encoded (see
+        # _as_form_value); the JSON sendMessage path nests them directly instead.
+        for key, value in build_send_options(with_caption=has_caption).items():
+            data[key] = _as_form_value(value)
         success, r, err = await self._post_telegram(url, data=data)
         if not success or r is None:
             logging.error(
@@ -429,6 +489,123 @@ class TelegramSender:
         return await self._send_media_message(
             "sendDocument", "document", document, caption, recorder
         )
+
+    async def send_animation_message(
+        self, animation: str, caption: str, recorder: EventRecorder
+    ):
+        return await self._send_media_message(
+            "sendAnimation", "animation", animation, caption, recorder
+        )
+
+    async def send_audio_message(
+        self, audio: str, caption: str, recorder: EventRecorder
+    ):
+        return await self._send_media_message(
+            "sendAudio", "audio", audio, caption, recorder
+        )
+
+    async def send_voice_message(
+        self, voice: str, caption: str, recorder: EventRecorder
+    ):
+        return await self._send_media_message(
+            "sendVoice", "voice", voice, caption, recorder
+        )
+
+    async def send_video_note_message(
+        self, video_note: str, caption: str, recorder: EventRecorder
+    ):
+        """Send a round video note. ``sendVideoNote`` accepts no caption at all,
+        so the caption is dropped here and the handler posts it as a reply."""
+        return await self._send_media_message(
+            "sendVideoNote", "video_note", video_note, caption, recorder,
+            supports_caption=False,
+        )
+
+    async def send_media_group(
+        self,
+        items: List[Tuple[str, str]],
+        caption: str,
+        recorder: EventRecorder,
+    ):
+        """Relay an album in one ``sendMediaGroup`` call.
+
+        ``items`` is ``[(input_media_type, file_id), …]`` already validated by
+        ``media_group_buffer.can_send_as_album``. Telegram shows the album's
+        caption from the **first** item only, so the translated caption goes
+        there; a caption over the 1024-char media limit is the caller's problem
+        (it splits and posts the remainder as a reply to the group).
+
+        ``sendMediaGroup`` returns an *array* of messages. The first one's id is
+        recorded as ``dest_message_id`` so the source→destination edit mapping in
+        ``CONFIG.get_destination_msg_id`` keeps working unchanged.
+        """
+        target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
+        if not dest_channel_id:
+            # Same guard as send_message / _send_media_message.
+            raise ValueError(
+                f"empty destination chat_id for media group send "
+                f"(dest_channel_name={target!r})"
+            )
+
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMediaGroup"
+        sanitized_caption = sanitize_html(caption)
+        show_above = _env_flag("SHOW_CAPTION_ABOVE_MEDIA", False)
+
+        media = []
+        for index, (input_type, file_id) in enumerate(items):
+            entry = {"type": input_type, "media": file_id}
+            if index == 0 and sanitized_caption:
+                entry["caption"] = sanitized_caption
+                entry["parse_mode"] = "HTML"
+                if show_above:
+                    entry["show_caption_above_media"] = True
+            media.append(entry)
+
+        logging.info(
+            "Sending media group of %d item(s) to %s (chat_id %s)…",
+            len(media),
+            target,
+            dest_channel_id,
+        )
+        data = {"chat_id": dest_channel_id, "media": json.dumps(media)}
+        for key, value in build_send_options().items():
+            data[key] = _as_form_value(value)
+
+        success, r, err = await self._post_telegram(url, data=data)
+        if not success or r is None:
+            exception_message = err
+            if r is not None:
+                try:
+                    exception_message = r.json().get("description", r.text)
+                except Exception:
+                    exception_message = r.text
+            logging.error(
+                "Failed to send media group to %s: %s",
+                dest_channel_id,
+                exception_message,
+                extra={"no_forward": True},
+            )
+            recorder.set(
+                dest_message_id=None,
+                posting_success=False,
+                api_error_code=r.status_code if r else None,
+                exception_message=exception_message,
+            )
+            return False
+
+        # result is an array of Messages; the first carries the album caption.
+        results = r.json().get("result") or []
+        sent_msg_id = results[0].get("message_id") if results else None
+        recorder.set(
+            dest_message_id=sent_msg_id,
+            posting_success=True,
+            api_error_code=None,
+            exception_message=None,
+        )
+        logging.info(
+            "Successfully sent media group (%d item(s)) to %s", len(media), target
+        )
+        return True
 
     async def edit_message(self, channel_id, message_id, text, recorder: EventRecorder, original_text: Optional[str] = None):
         """
@@ -597,6 +774,11 @@ class TelegramSender:
             "caption": sanitized_caption,
             "parse_mode": "HTML",
         }
+        # editMessageCaption accepts show_caption_above_media, so an edited post
+        # keeps the same layout as the original send. protect_content and
+        # disable_notification are send-only and must not be sent here.
+        if _env_flag("SHOW_CAPTION_ABOVE_MEDIA", False):
+            payload["show_caption_above_media"] = _as_form_value(True)
         posting_success = False
         api_error_code = None
         exception_message = None

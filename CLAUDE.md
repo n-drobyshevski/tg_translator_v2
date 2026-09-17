@@ -119,12 +119,42 @@ Per-message pipeline in `register_handlers` (`translator/bot.py`):
    `utils/utils_async.run_with_retries` (3 attempts, exponential backoff + jitter,
    skips non-retryable errors like `ValueError`/`KeyError`). The Anthropic call is
    synchronous SDK wrapped in `asyncio.to_thread` so it never blocks the loop.
-5. Send via `services/telegram_sender.TelegramSender` — `send_photo_message`
-   when it's a photo with a download link and caption < 1024 chars, else
-   `send_message` (which splits at the 4096-char limit). `TelegramSender` talks
-   to the **raw Bot API over `httpx.AsyncClient`** (a fresh client per call, since
-   it's shared by the async bot and the per-request-loop Flask app), not via PTB.
+5. Send via `services/telegram_sender.TelegramSender` — the matching
+   `send_<kind>_message` when there's a download link and the caption fits in
+   1024 chars, else `send_message` (which splits at the 4096-char limit).
+   `TelegramSender` talks to the **raw Bot API over `httpx.AsyncClient`** (a fresh
+   client per call, since it's shared by the async bot and the per-request-loop
+   Flask app), not via PTB.
 6. Record the outcome with `services/event_logger.EventRecorder`.
+
+`get_media_info` recognizes `animation, voice, video_note, audio, doc, photo,
+video` — **in that order, which matters**: Pyrogram sets `.document` (and
+sometimes `.video`) alongside `.animation` for GIFs, and first-present wins.
+`sendVideoNote` is the one endpoint that takes **no caption at all**, so a video
+note is relayed bare and the translation follows as a reply
+(`bot.CAPTIONLESS_MEDIA`); everything else in `bot.CAPTIONED_MEDIA` carries its
+caption, which is also what the edit handler keys on to choose
+`editMessageCaption` vs `editMessageText`.
+
+**Albums** (`services/media_group_buffer.py`): Telegram delivers a media group as
+N independent updates sharing a `media_group_id`, with no "group complete"
+signal and the caption on only one part. `handle_message` routes those into a
+`MediaGroupBuffer`, which debounces on quiet (`MEDIA_GROUP_DEBOUNCE`, default 2s)
+and then relays the whole album through one `sendMediaGroup` with a single
+translation. `can_send_as_album` enforces the Bot API's rules (2–10 items; only
+photo/video/document/audio, and only one family per album — animations, voice and
+video notes are never albumable); anything else falls back to per-item relay.
+`sendMediaGroup` returns an **array** of messages, and the first id is recorded
+as `dest_message_id` so the edit mapping keeps working.
+
+Send options are centralized in `telegram_sender`: `build_link_preview_options`,
+`build_reply_parameters` (Bot API 7.0 `reply_parameters`, replacing the legacy
+`reply_to_message_id`, with `allow_sending_without_reply` so a split post can't
+lose its remainder) and `build_send_options` (env-gated `PROTECT_CONTENT`,
+`DISABLE_NOTIFICATION`, `SHOW_CAPTION_ABOVE_MEDIA`). **Watch the encoding split**:
+`sendMessage` uses a JSON body so these nest directly, while the media and edit
+paths are form-encoded and must go through `_as_form_value` (booleans become
+lowercase JSON literals, objects become JSON strings).
 
 **Edits** are handled separately: the edit handler looks up the previously-sent
 destination message ID via `CONFIG.get_destination_msg_id(...)` (which scans
@@ -227,7 +257,19 @@ The manager and aggregator code is heavily instrumented with `print(...)`
 `translate_html` calls the model in `CONFIG.ANTHROPIC_MODEL` (env `ANTHROPIC_MODEL`,
 default **`claude-haiku-4-5`** — the old `claude-3-haiku-20240307` was retired by
 Anthropic on 2026-04-20). `ANTHROPIC_MAX_TOKENS`/`ANTHROPIC_TEMPERATURE` are also
-env-overridable (defaults 1500 / 0). The system/instructions/example prompt lives in
+env-overridable (defaults 1500 / 0).
+
+> **`temperature` must go through `extra_body`.** `anthropic` 1.x removed
+> `temperature`/`top_p`/`top_k` from the `messages.create()` signature — passing one
+> is a `TypeError`, and `TypeError` is in `run_with_retries`' `NON_RETRYABLE` tuple,
+> so it would fail *every* translation permanently with no retry. The parameter is
+> gone from the SDK signature, not the API; `claude-haiku-4-5` still honours it. Note
+> that the test doubles all take `**kwargs` and so cannot catch this on their own —
+> `test_translate_html_kwargs_match_the_real_sdk_signature` binds the kwargs against
+> the installed SDK's real signature, which is what makes the next such removal a
+> failing test instead of a production outage.
+
+The system/instructions/example prompt lives in
 `translator/prompt_template.txt` (loaded via `config.load_prompt_template`) and
 encodes strict literal-translation rules (preserve HTML links/URLs, hashtags,
 paragraph `<p>` tags, wrap the first sentence in `<b>`, never relabel Belarusian
@@ -247,4 +289,24 @@ bypass the full template. The response is post-processed to strip stray
 - `EventRecorder.prefill` initializes `float` fields to `False` (a pre-existing
   quirk) — be deliberate when changing `MessageEvent` field types.
 - Telegram limits enforced in code: 4096 chars/message, 1024 chars for photo
-  captions, 20 MB for Bot API file fetches (`max_size` in the handler).
+  captions, 20 MB for Bot API file fetches (`max_size` in the handler), 2–10 items
+  per `sendMediaGroup`.
+- **`anthropic` is on 1.x**, whose internal HTTP layer is `httpx2`. That installs
+  *alongside* the separately-pinned `httpx` (different distribution, no conflict):
+  `httpx` is ours, used by `telegram_sender` / `error_sender` and patched in tests.
+  Don't "unify" them, and don't call `httpx2.alias_httpx()` — the tests mock
+  Telegram HTTP, not SDK HTTP, so aliasing would only break the existing doubles.
+- **Pin bumps are manual in two places.** `requirements.txt` and `pyproject.toml`
+  duplicate the same dependency list and nothing keeps them in sync; there is no CI.
+  `python-telegram-bot` lags the current Bot API (22.8 targets 10.0 vs Telegram's
+  10.3), which is harmless because PTB is only a `get_chat`/`get_file` RPC client —
+  the relay's own sends go through `TelegramSender`'s raw calls.
+- `translator/tests/test_utils_html.py` drives kurigram's **real** parser through
+  semi-private paths (`pyrogram.parser.html.HTML.unparse`,
+  `parser_utils.add_surrogates`), so it is the canary for a kurigram bump. Its
+  filters are `isinstance`-based since 2.2.26, which is why message stand-ins in
+  `test_admin_auth.py` must be real `Message` instances, not `SimpleNamespace`.
+- `PRESERVE_CUSTOM_EMOJI` (default off) gates `<tg-emoji>` in both sanitizers.
+  Off is the safe default: Bot API 9.4 lets bots send custom emoji, but only ones
+  the bot may use, and a mirrored post's emoji come from the *source* channel —
+  Telegram rejects the whole message if one isn't usable.

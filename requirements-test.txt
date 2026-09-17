@@ -3,6 +3,8 @@
 -r requirements.txt
 
 # Test framework
-pytest==8.4.2
-pytest-asyncio==1.2.0   # required by pytest.ini (asyncio_mode = auto)
-pytest-cov==7.0.0       # required by test.bat (pytest --cov=translator)
+pytest==9.1.1
+# pytest-asyncio 1.3.0 is what added pytest 9 compatibility, so this pin is
+# required by the pytest bump above, not independent of it.
+pytest-asyncio==1.4.0   # required by pytest.ini (asyncio_mode = auto)
+pytest-cov==7.1.0       # required by test.bat (pytest --cov=translator)

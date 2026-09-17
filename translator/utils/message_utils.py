@@ -70,8 +70,20 @@ def get_media_info(msg, max_size: int) -> Tuple[Optional[str], Optional[int], st
     file_id = None
     file_size_bytes = None
     media_type = "text"
-    # A message carries at most one of these; first present wins.
-    for kind, attr in (("doc", "document"), ("photo", "photo"), ("video", "video")):
+    # First present wins, so ORDER MATTERS. Pyrogram populates `.document` (and
+    # sometimes `.video`) alongside `.animation` for GIFs, and a GIF relayed via
+    # sendDocument loses its autoplay, so `animation` has to be probed first.
+    # Likewise `voice`/`video_note` are probed before the generic `audio`/`video`
+    # they resemble. Everything below `photo` is a plain single-attribute case.
+    for kind, attr in (
+        ("animation", "animation"),
+        ("voice", "voice"),
+        ("video_note", "video_note"),
+        ("audio", "audio"),
+        ("doc", "document"),
+        ("photo", "photo"),
+        ("video", "video"),
+    ):
         media = getattr(msg, attr, None)
         if not media:
             continue

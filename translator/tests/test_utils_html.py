@@ -124,3 +124,28 @@ def test_entities_to_html_escapes_leading_and_trailing_text():
 
 def test_entities_to_html_escapes_plain_text_without_entities():
     assert entities_to_html("a < b & c", None) == "a &lt; b &amp; c"
+
+
+def test_custom_emoji_flattened_by_default(monkeypatch):
+    from translator.utils.utils_html import _to_bot_api_html
+
+    monkeypatch.delenv("PRESERVE_CUSTOM_EMOJI", raising=False)
+    # Safe default: a mirrored post's emoji come from the SOURCE channel, and
+    # Telegram rejects the whole message if the bot may not use one.
+    assert _to_bot_api_html('<tg-emoji emoji-id="5368">👍</tg-emoji>') == "👍"
+
+
+def test_custom_emoji_preserved_when_enabled(monkeypatch):
+    from translator.utils.utils_html import _to_bot_api_html
+
+    monkeypatch.setenv("PRESERVE_CUSTOM_EMOJI", "1")
+    raw = '<tg-emoji emoji-id="5368">👍</tg-emoji>'
+    assert _to_bot_api_html(raw) == raw
+
+
+def test_tg_time_always_flattened(monkeypatch):
+    from translator.utils.utils_html import _to_bot_api_html
+
+    # There is no Bot API date tag, so this one is unconditional.
+    monkeypatch.setenv("PRESERVE_CUSTOM_EMOJI", "1")
+    assert _to_bot_api_html('<tg-time timestamp="1">Jan 1</tg-time>') == "Jan 1"
