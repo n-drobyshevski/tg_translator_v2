@@ -39,7 +39,7 @@ from translator.services import (
 )
 from translator.services.admin_i18n import t
 from translator.utils.error_format import humanize_text
-from translator.utils.model_capabilities import supports_sampling_params
+from translator.utils.model_capabilities import supports_effort, supports_sampling_params
 from translator.utils.prompt_validation import validate_prompt
 from translator.utils.translation_utils import reload_prompt_template
 
@@ -51,6 +51,9 @@ _NAME_RE = re.compile(r"[a-z0-9_]+")
 # LOGICAL_CHANNELS, so unsetting it would break reload()).
 _PROTECTED_CHANNELS = {"test"}
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+# output_config.effort values accepted on the Opus 4.7+ surface. Ordered
+# low→high so the menu and the error message agree on presentation order.
+_VALID_EFFORTS = ("low", "medium", "high")
 
 _REPLY_LIMIT = 4000  # stay under Telegram's 4096 hard cap
 
@@ -284,6 +287,25 @@ def _cmd_setmaxtokens(args: List[str], lang: str = "en") -> str:
     return t("settokens_ok", lang, val=val)
 
 
+def _cmd_seteffort(args: List[str], lang: str = "en") -> str:
+    """Set ``ANTHROPIC_EFFORT`` — thinking depth on the Opus 4.7+ surface.
+
+    The modern counterpart to /settemp: each request surface takes one of the two
+    and rejects the other, so this warns in exactly the same shape when the
+    active model won't use it.
+    """
+    if len(args) != 1:
+        return t("seteffort_usage", lang)
+    val = args[0].strip().lower()
+    if val not in _VALID_EFFORTS:
+        return t("seteffort_invalid", lang, levels=", ".join(_VALID_EFFORTS))
+    _persist_and_reload("ANTHROPIC_EFFORT", val)
+    reply = t("seteffort_ok", lang, val=val)
+    if not supports_effort(CONFIG.ANTHROPIC_MODEL):
+        reply += t("seteffort_ignored", lang, model=html.escape(CONFIG.ANTHROPIC_MODEL))
+    return reply
+
+
 def _cmd_setloglevel(args: List[str], lang: str = "en") -> str:
     if len(args) != 1:
         return t("setlog_usage", lang)
@@ -507,6 +529,31 @@ def _cmd_setlang(args: List[str], msg, lang: str = "en") -> str:
     return t("lang_switched", new_lang)
 
 
+async def _reply_for_wizard(msg, uid, reply: str, lang: str) -> None:
+    """Send a wizard reply with the keyboard that step needs.
+
+    The two id steps get Telegram's native channel picker; finishing (or
+    cancelling) puts the main menu keyboard back, because the picker keyboard is
+    one-shot and would otherwise leave the admin with no buttons at all.
+    """
+    from translator.services import admin_menu  # lazy: avoid import cycle
+
+    step = admin_wizard.current_step(uid)
+    if step in ("src", "dst"):
+        reply += t("wiz_pick_hint", lang)
+        markup = admin_menu.build_channel_picker_keyboard(lang)
+    elif step is None:
+        markup = admin_menu.to_reply_markup(admin_menu.build_reply_keyboard(lang), lang)
+    else:
+        markup = None
+    try:
+        await msg.reply_text(
+            _truncate(reply), parse_mode=enums.ParseMode.HTML, reply_markup=markup
+        )
+    except Exception:
+        log.exception("failed to send wizard reply")
+
+
 async def handle_command(
     msg,
     *,
@@ -561,6 +608,8 @@ async def handle_command(
         return _cmd_settemp(args, lang)
     if cmd == "/setmaxtokens":
         return _cmd_setmaxtokens(args, lang)
+    if cmd == "/seteffort":
+        return _cmd_seteffort(args, lang)
     if cmd == "/setloglevel":
         return _cmd_setloglevel(args, lang)
     if cmd == "/setlang":
@@ -586,6 +635,86 @@ async def handle_command(
     if cmd == "/reload":
         return _cmd_reload(lang)
     return t("unknown_cmd", lang, cmd=html.escape(cmd))
+
+
+# --- Native command menu (setMyCommands) --------------------------------------
+
+# The commands published to Telegram's "/" autocomplete and the ☰ menu button,
+# in the order operators actually reach for them. Each entry is
+# (command, i18n key for its one-line description).
+#
+# These are published with BotCommandScopeChat per admin, never globally: the
+# command list is the map of the whole control surface, and a non-admin who can
+# DM the bot should not be handed it. That matches the group-1 reject handler
+# below, which keeps the surface silent for everyone else.
+COMMAND_SPECS = (
+    ("menu", "cmd_desc_menu"),
+    ("status", "cmd_desc_status"),
+    ("stats", "cmd_desc_stats"),
+    ("channels", "cmd_desc_channels"),
+    ("logs", "cmd_desc_logs"),
+    ("prompt", "cmd_desc_prompt"),
+    ("setmodel", "cmd_desc_setmodel"),
+    ("seteffort", "cmd_desc_seteffort"),
+    ("setmaxtokens", "cmd_desc_setmaxtokens"),
+    ("settemp", "cmd_desc_settemp"),
+    ("setprompt", "cmd_desc_setprompt"),
+    ("setloglevel", "cmd_desc_setloglevel"),
+    ("setlang", "cmd_desc_setlang"),
+    ("addchannel", "cmd_desc_addchannel"),
+    ("editchannel", "cmd_desc_editchannel"),
+    ("removechannel", "cmd_desc_removechannel"),
+    ("admins", "cmd_desc_admins"),
+    ("addadmin", "cmd_desc_addadmin"),
+    ("removeadmin", "cmd_desc_removeadmin"),
+    ("reload", "cmd_desc_reload"),
+    ("cancel", "cmd_desc_cancel"),
+    ("help", "cmd_desc_help"),
+)
+
+
+def build_bot_commands(lang: str = "en"):
+    """``COMMAND_SPECS`` as Pyrogram ``BotCommand`` objects in ``lang``."""
+    from pyrogram.types import BotCommand
+
+    return [BotCommand(name, t(key, lang)) for name, key in COMMAND_SPECS]
+
+
+async def publish_commands_for(pyro, uid) -> bool:
+    """Publish the admin command list into one admin's private chat.
+
+    Scoped to that chat, in that admin's own menu language. Returns True on
+    success; never raises — a bot that can't set its command menu must still
+    relay messages, so every failure here is a logged warning.
+    """
+    from pyrogram.types import BotCommandScopeChat, MenuButtonCommands
+
+    lang = admin_prefs.get_lang(uid) or admin_i18n.DEFAULT_LANG
+    try:
+        await pyro.set_bot_commands(
+            build_bot_commands(lang), scope=BotCommandScopeChat(chat_id=uid)
+        )
+        # Point the ☰ button at that list instead of the default "what can this
+        # bot do?" blurb.
+        await pyro.set_chat_menu_button(chat_id=uid, menu_button=MenuButtonCommands())
+        return True
+    except Exception:
+        log.warning("could not publish command menu for admin %s", uid, exc_info=True)
+        return False
+
+
+async def publish_admin_commands(pyro) -> int:
+    """Publish the command menu to every configured admin. Returns the count.
+
+    Called once after ``pyro.start()`` (the client must be connected) and again
+    whenever an admin switches menu language, so the "/" list follows the menu.
+    """
+    published = 0
+    for uid in CONFIG.ADMIN_CHAT_IDS:
+        if await publish_commands_for(pyro, uid):
+            published += 1
+    log.info("published command menu to %d/%d admins", published, len(CONFIG.ADMIN_CHAT_IDS))
+    return published
 
 
 def _is_admin(_f, _c, m) -> bool:
@@ -618,6 +747,14 @@ def register_admin_handlers(
     """Register the private-DM admin command handler on the Pyrogram client."""
     from translator.services import admin_menu  # lazy: avoid import cycle
 
+    # Pseudo-commands that answer with an inline menu instead of plain text.
+    _MENU_ENTRIES = {
+        "/settings": admin_menu.settings_entry,
+        "/aimenu": admin_menu.ai_entry,
+        "/adminsmenu": admin_menu.admins_entry,
+        "/channelsmenu": admin_menu.channels_entry,
+    }
+
     @pyro.on_message(filters.private & _admin_filter())
     async def _dispatch(client, msg):  # noqa: ANN001
         uid = getattr(getattr(msg, "from_user", None), "id", None)
@@ -640,11 +777,30 @@ def register_admin_handlers(
                     _truncate(reply),
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=admin_menu.to_reply_markup(
-                        admin_menu.build_reply_keyboard(lang)
+                        admin_menu.build_reply_keyboard(lang), lang
                     ),
                 )
             except Exception:
                 log.exception("failed to send add-admin reply")
+            return
+
+        # A channel picked via the "📡 Pick a channel…" keyboard likewise arrives
+        # as a service message carrying chat_shared. Feed its id into the wizard
+        # exactly as if the admin had typed it, so both routes commit through the
+        # same validation and the same _cmd_addchannel.
+        picked = getattr(msg, "chat_shared", None)
+        if picked is not None:
+            chat = getattr(picked, "chat", None)
+            chat_id = getattr(chat, "id", None)
+            if chat_id is None or uid is None or not admin_wizard.is_active(uid):
+                # Nothing is waiting for it, so acting would write a channel pair
+                # nobody asked for. Stay silent rather than guess.
+                log.info("ignoring chat_shared with no wizard pending (uid=%s)", uid)
+                return
+            title = getattr(chat, "title", None) or str(chat_id)
+            reply = t("wiz_picked", lang, title=html.escape(str(title)), id=chat_id)
+            reply += admin_wizard.feed(uid, str(chat_id), lang)
+            await _reply_for_wizard(msg, uid, reply, lang)
             return
 
         text = (getattr(msg, "text", None) or "").strip()
@@ -673,56 +829,38 @@ def register_admin_handlers(
                     admin_i18n.t("menu_greeting", lang),
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=admin_menu.to_reply_markup(
-                        admin_menu.build_reply_keyboard(lang)
+                        admin_menu.build_reply_keyboard(lang), lang
                     ),
                 )
             except Exception:
                 log.exception("failed to send menu")
             return
-        if token == "/settings":
-            title, rows = admin_menu.settings_entry(lang)
-            try:
-                await msg.reply_text(
-                    title,
-                    parse_mode=enums.ParseMode.HTML,
-                    reply_markup=admin_menu.to_inline_markup(rows),
+        # Inline-menu entrypoints: same shape, so they share one path rather than
+        # four copies that have to be kept in step (they now all need the
+        # styled-markup fallback in send_with_markup).
+        entry = _MENU_ENTRIES.get(token)
+        if entry is not None:
+            title, rows = entry(lang)
+
+            async def _send(body, **kw):
+                return await msg.reply_text(
+                    body, parse_mode=enums.ParseMode.HTML, **kw
                 )
-            except Exception:
-                log.exception("failed to send settings menu")
-            return
-        if token == "/aimenu":
-            title, rows = admin_menu.ai_entry(lang)
+
             try:
-                await msg.reply_text(
-                    title,
-                    parse_mode=enums.ParseMode.HTML,
-                    reply_markup=admin_menu.to_inline_markup(rows),
-                )
+                await admin_menu.send_with_markup(_send, title, rows)
             except Exception:
-                log.exception("failed to send AI settings menu")
+                log.exception("failed to send %s menu", token)
             return
-        if token == "/adminsmenu":
-            title, rows = admin_menu.admins_entry(lang)
-            try:
-                await msg.reply_text(
-                    title,
-                    parse_mode=enums.ParseMode.HTML,
-                    reply_markup=admin_menu.to_inline_markup(rows),
-                )
-            except Exception:
-                log.exception("failed to send admins menu")
-            return
-        if token == "/channelsmenu":
-            title, rows = admin_menu.channels_entry(lang)
-            try:
-                await msg.reply_text(
-                    title,
-                    parse_mode=enums.ParseMode.HTML,
-                    reply_markup=admin_menu.to_inline_markup(rows),
-                )
-            except Exception:
-                log.exception("failed to send channels menu")
-            return
+
+        # Is this message a typed answer to an in-progress wizard? Captured
+        # *before* handle_command, which advances (or ends) the wizard — the reply
+        # needs that step's keyboard, so it can't take the plain path below.
+        answering_wizard = (
+            uid is not None
+            and not resolved.startswith("/")
+            and admin_wizard.is_active(uid)
+        )
 
         try:
             reply = await handle_command(
@@ -737,6 +875,28 @@ def register_admin_handlers(
         except Exception as exc:  # never let an admin command crash the handler
             log.exception("admin command failed")
             reply = f"❌ Error: {html.escape(str(exc))}"
+
+        if answering_wizard or token == "/cancel":
+            await _reply_for_wizard(msg, uid, reply, lang)
+            return
+        # A typed /setlang has to re-skin the persistent keyboard and republish
+        # the "/" list, the same way the inline Language button already does —
+        # otherwise the two routes leave the surface in different languages.
+        if token == "/setlang":
+            new_lang = admin_prefs.get_lang(uid) if uid is not None else lang
+            try:
+                await msg.reply_text(
+                    _truncate(reply),
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=admin_menu.to_reply_markup(
+                        admin_menu.build_reply_keyboard(new_lang), new_lang
+                    ),
+                )
+            except Exception:
+                log.exception("failed to send setlang reply")
+            if uid is not None:
+                await publish_commands_for(pyro, uid)
+            return
         try:
             await msg.reply_text(
                 _truncate(reply), parse_mode=enums.ParseMode.HTML

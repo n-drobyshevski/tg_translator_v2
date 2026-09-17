@@ -59,7 +59,10 @@ from translator.services.media_group_buffer import (
 from translator.services.event_logger import EventRecorder
 from translator.services.error_sender import send_alert
 from translator.utils.error_format import humanize_error
-from translator.services.admin_commands import register_admin_handlers
+from translator.services.admin_commands import (
+    publish_admin_commands,
+    register_admin_handlers,
+)
 from translator.services.log_forwarding import attach_error_forwarding
 
 # PTB optional rate limiter
@@ -749,6 +752,11 @@ async def main_async():
 
     await pyro.start()
     pyro_log.info("Pyrogram started — Ctrl-C to exit")
+
+    # Публикуем список команд в нативное меню "/" — только в приватных чатах
+    # админов, поэтому для остальных бот по-прежнему выглядит немым.
+    # Требует уже подключённого клиента, отсюда вызов после start().
+    await publish_admin_commands(pyro)
 
     await stop_event.wait()
 
