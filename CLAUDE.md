@@ -21,25 +21,78 @@ section — `STORAGE_BACKEND=json` falls back to the legacy `events.json`):
 All commands assume the **repo root is on `PYTHONPATH`** (this is the single
 most common source of `ModuleNotFoundError: translator`).
 
+**Dependencies are managed with [uv](https://docs.astral.sh/uv/).** `pyproject.toml`
+declares them, `uv.lock` pins the exact resolved set (both committed), and the
+two `requirements*.txt` files are **generated** fallbacks — see the dependency
+section under "Conventions & gotchas".
+
 ```bash
+# Set up / refresh the environment from the lockfile (creates .venv)
+uv sync --frozen          # --frozen: use uv.lock as-is, never silently re-resolve
+
 # Run the relay bot (it adds the repo root to sys.path itself)
-python translator/bot.py
+uv run python translator/bot.py
 
 # Run the admin web app — must run from the app/ directory with repo root on PYTHONPATH,
 # because flask_app.py mixes bare imports (admin_dashboard) and package imports (app.admin_events, translator.*)
-cd app && PYTHONPATH=<repo-root> python flask_app.py   # serves on 0.0.0.0:5000
+cd app && PYTHONPATH=<repo-root> uv run python flask_app.py   # serves on 0.0.0.0:5000
 
-# Tests (Windows convenience script: creates .venv, installs, runs pytest+coverage)
+# Tests (Windows convenience script; uses uv when present, else pip)
 test.bat
 
-# Tests directly
-PYTHONPATH=<repo-root> pytest --cov=translator
-PYTHONPATH=<repo-root> pytest translator/tests/test_config.py            # one file
-PYTHONPATH=<repo-root> pytest translator/tests/test_config.py::test_name # one test
+# Tests directly — note the `translator` argument
+uv run --frozen pytest translator --cov=translator
+uv run --frozen pytest translator/tests/test_config.py            # one file
+uv run --frozen pytest translator/tests/test_config.py::test_name # one test
 ```
+
+> **Run pytest against `translator/`, not bare.** `pytest.ini` lives in
+> `translator/`, so a bare `pytest` from the repo root never loads it — which
+> means `asyncio_mode = auto` is off and ~50 async tests fail with "async def
+> functions are not natively supported". It looks like a broken suite and is not.
+
+> Without uv: `pip install -r requirements-test.txt` then
+> `PYTHONPATH=<repo-root> pytest translator`. That installs the same versions
+> (the file is exported from the lock), just without the lock being enforced.
 
 Test config lives in `translator/pytest.ini` (`asyncio_mode = auto`, so async
 tests need no decorator; `python_files = tests/test_*.py`).
+
+## Deploying (PythonAnywhere)
+
+The production host is a shared PythonAnywhere account: the checkout is at
+`~/bot`, the virtualenv at `~/.virtualenvs/translatorbot`, and there is no CI —
+dependencies are installed by hand, which is why the installed set has drifted
+from the pins before (it ran kurigram 2.2.23 against code that needed 2.2.26,
+and the admin menu crashed). uv makes that drift a one-command, verifiable fix.
+
+```bash
+pip install uv                      # into the venv; the standalone installer
+                                    # needs outbound access a free account lacks
+export UV_PROJECT_ENVIRONMENT=~/.virtualenvs/translatorbot
+cd ~/bot && git pull
+uv sync --frozen --no-dev           # exactly uv.lock, runtime only
+```
+
+Then restart the always-on task (Tasks tab) and reload the web app.
+
+> **`uv sync` prunes.** It removes anything in the environment that is not in the
+> lock — including `pip` itself, since uv does not install it. That is the point
+> (the environment then provably matches the lock), but it means the first run
+> against the live venv is not reversible in place. **Migrate blue/green**: sync
+> into a *new* path, check it, then repoint the task:
+>
+> ```bash
+> UV_PROJECT_ENVIRONMENT=~/.virtualenvs/translatorbot-uv uv sync --frozen --no-dev
+> ~/.virtualenvs/translatorbot-uv/bin/python -c "import pyrogram, anthropic; \
+>     print(pyrogram.__version__, anthropic.__version__)"
+> ```
+>
+> Expect `2.2.26 1.6.0`. Keep the old venv until the bot has run a while on the
+> new one.
+
+If uv can't be used on the host at all, `pip install -r requirements.txt` still
+works — that file is generated from the same lock.
 
 ## Configuration
 
@@ -197,12 +250,30 @@ receives DMs directly — no PTB polling is involved.
   `copy:<text>` → `CopyTextButton` (7.11) and `x:<data>` → `DisabledButton`
   (10.2), decoded in `to_inline_markup`; destructive heads (`rmchok`, `rmadminok`)
   render `ButtonStyle.DANGER` (9.4). Telegram fires no callback query for either
-  kind, so `handle_callback` never sees those prefixes. **Menu sends go through
-  `send_with_markup`**, which retries once with `plain=True` if Telegram refuses
-  the markup — a disabled button then degrades to the ordinary button it wraps
-  (`x:` carries the action it would have performed) and copy buttons drop out.
-  None of this chrome can be exercised against live Telegram from CI, so the
-  fallback is what keeps an unsupported button kind from taking out the menu.
+  kind, so `handle_callback` never sees those prefixes.
+- **Every button kind newer than Bot API 7.x is optional and probed at import.**
+  `admin_menu` resolves `HAS_COPY_BUTTON` / `HAS_DISABLED_BUTTON` /
+  `HAS_BUTTON_STYLE` / `HAS_CHAT_PICKER` / `HAS_KEYBOARD_HINTS` once, checking
+  **both** that the type exists (`getattr(pyro_types, …)`) and that the
+  constructor takes the keyword (`_accepts`) — an older `InlineKeyboardButton`
+  imports fine while `style=` is still a `TypeError`. Nothing outside those
+  guards may reference an optional type, and **no function may `from
+  pyrogram.types import` one**: that is exactly the bug that took the menu down
+  in production, where the `plain=True` fallback re-ran the same unconditional
+  import and raised the *identical* `ImportError` it existed to catch.
+  Why this matters here: dependencies on the PythonAnywhere host are installed
+  by hand and there is no CI, so the kurigram actually running routinely lags
+  `requirements.txt` (it ran the new menu code against 2.2.23, which has no
+  `CopyTextButton`). `main_async` logs the version and the resolved flags at
+  startup so the next skew is a line in `bot.log`, not a traceback DM'd mid-tap.
+- **`send_with_markup` degrades the markup, never the message**: full chrome →
+  plain callback buttons → **no markup at all**. Markup is built outside the send
+  so a construction failure is logged separately from a Telegram rejection, and
+  `MessageNotModified` is re-raised untouched from any tier. A disabled button
+  degrades to the ordinary button it wraps (`x:` carries the action), copy
+  buttons drop out, and an emptied row is skipped — so degrading never makes an
+  action unreachable. "The operator saw nothing" was the real symptom; the last
+  tier exists to make that impossible.
 - **Preset lists track `config.py`, not the docs.** `MODEL_PRESETS` /
   `TOKEN_PRESETS` / `EFFORT_PRESETS` went stale once (the menu still said
   "Haiku 4.5 (default)" after the default became Sonnet 5), so which preset is
@@ -238,7 +309,9 @@ receives DMs directly — no PTB polling is involved.
   path, but the button path now makes it unmakeable: the add-channel wizard
   (`services/admin_wizard.py`) offers Telegram's **native chat picker**
   (`KeyboardButtonRequestChat` with `chat_is_channel` + `bot_is_member`), so only
-  channels the bot can already read are listed. A pick arrives as a `chat_shared`
+  channels the bot can already read are listed. `build_channel_picker_keyboard`
+  returns `None` where `HAS_CHAT_PICKER` is false, and `_reply_for_wizard` then
+  suppresses the pick hint too rather than advertising a button that isn't there. A pick arrives as a `chat_shared`
   service message and is fed into `admin_wizard.feed()` exactly as a typed id
   would be, so both routes share one validation path and one commit. Typed ids
   still work. `admin_wizard.current_step()` is what the Pyrogram layer reads to
@@ -384,9 +457,32 @@ bypass the full template. The response is post-processed to strip stray
   `httpx` is ours, used by `telegram_sender` / `error_sender` and patched in tests.
   Don't "unify" them, and don't call `httpx2.alias_httpx()` — the tests mock
   Telegram HTTP, not SDK HTTP, so aliasing would only break the existing doubles.
-- **Pin bumps are manual in two places.** `requirements.txt` and `pyproject.toml`
-  duplicate the same dependency list and nothing keeps them in sync; there is no CI.
-  `python-telegram-bot` lags the current Bot API (22.8 targets 10.0 vs Telegram's
+- **Dependencies: `pyproject.toml` is the only file you edit.** `uv.lock` holds
+  the resolved set (53 packages, transitives included) and is committed;
+  `requirements.txt` / `requirements-test.txt` are **generated** and must never
+  be hand-edited. After any dependency change:
+
+  ```bash
+  uv lock                 # or `uv add <pkg>` / `uv remove <pkg>`, which lock for you
+  uv export --frozen --no-dev --no-hashes --no-emit-project -o requirements.txt
+  uv export --frozen --no-hashes --no-emit-project -o requirements-test.txt
+  ```
+
+  `translator/tests/test_dependency_manifests.py` fails if you skip the export
+  step, or bump a pin in `pyproject.toml` without re-locking. It parses both
+  files with plain regex — no uv and no `tomllib` at test time, because
+  `tomllib` is 3.11+ and the server runs 3.10.
+
+  The generated files exist because the production host installs by hand and may
+  not have uv. They are a *fallback*, not a second source of truth — which is the
+  distinction that was missing before, when all three files were hand-maintained
+  copies and the skew left production on kurigram 2.2.23 against code needing
+  2.2.26.
+- **`[tool.uv] package = false`** — this repo is run from a checkout with the
+  root on `PYTHONPATH`; neither `translator` nor `app` was ever installed as a
+  distribution, and setuptools has no package config to do it with. Without that
+  flag `uv sync` would try to build and install the project itself.
+- `python-telegram-bot` lags the current Bot API (22.8 targets 10.0 vs Telegram's
   10.3), which is harmless because PTB is only a `get_chat`/`get_file` RPC client —
   the relay's own sends go through `TelegramSender`'s raw calls.
 - `translator/tests/test_utils_html.py` drives kurigram's **real** parser through

@@ -540,8 +540,10 @@ async def _reply_for_wizard(msg, uid, reply: str, lang: str) -> None:
 
     step = admin_wizard.current_step(uid)
     if step in ("src", "dst"):
-        reply += t("wiz_pick_hint", lang)
         markup = admin_menu.build_channel_picker_keyboard(lang)
+        # No picker on this kurigram → don't advertise a button that isn't there.
+        if markup is not None:
+            reply += t("wiz_pick_hint", lang)
     elif step is None:
         markup = admin_menu.to_reply_markup(admin_menu.build_reply_keyboard(lang), lang)
     else:
@@ -684,13 +686,16 @@ async def publish_commands_for(pyro, uid) -> bool:
     """Publish the admin command list into one admin's private chat.
 
     Scoped to that chat, in that admin's own menu language. Returns True on
-    success; never raises — a bot that can't set its command menu must still
-    relay messages, so every failure here is a logged warning.
+    success; **never raises** — this runs at startup right after ``pyro.start()``,
+    so anything that escapes here stops the bot from starting at all. The imports
+    are deliberately inside the try: an older kurigram that lacks either name
+    raises ImportError, and that has to be the logged warning this docstring
+    promises rather than a silent relay outage.
     """
-    from pyrogram.types import BotCommandScopeChat, MenuButtonCommands
-
     lang = admin_prefs.get_lang(uid) or admin_i18n.DEFAULT_LANG
     try:
+        from pyrogram.types import BotCommandScopeChat, MenuButtonCommands
+
         await pyro.set_bot_commands(
             build_bot_commands(lang), scope=BotCommandScopeChat(chat_id=uid)
         )
