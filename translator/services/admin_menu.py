@@ -25,11 +25,13 @@ and threaded down. Pure functions default ``lang="en"`` for back-compat.
 from __future__ import annotations
 
 import html
+import inspect
 import logging
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from pyrogram import enums
+from pyrogram import types as pyro_types
 
 from translator.config import CONFIG
 from translator.services import (
@@ -67,6 +69,64 @@ DISABLED_PREFIX = "x:"
 # Destructive confirmations render red (Bot API 9.4 button styles). Keyed by the
 # data head so the pure menu layer stays free of presentation concerns.
 _DANGER_HEADS = frozenset({"rmchok", "rmadminok"})
+
+
+# --- Optional newer button kinds ----------------------------------------------
+#
+# Dependencies on the production host are installed by hand (PythonAnywhere, no
+# CI), so the kurigram actually running can lag what requirements.txt pins —
+# that is the normal state between deploys, not an edge case. Every button kind
+# added after Bot API 7.x is therefore treated as OPTIONAL: probed once here, and
+# never referenced on a path that has to work without it.
+#
+# Two separate things can fail on an older kurigram, so both are checked: the
+# type may not exist, *and* the constructor may not accept the keyword that
+# carries it — `InlineKeyboardButton` imports fine on 2.2.23 while `style=` is
+# still a TypeError there.
+
+
+def _accepts(cls, param: str) -> bool:
+    """True if ``cls.__init__`` takes ``param``."""
+    try:
+        return param in inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):  # unintrospectable (C-implemented) __init__
+        return False
+
+
+_CopyTextButton = getattr(pyro_types, "CopyTextButton", None)
+_DisabledButton = getattr(pyro_types, "DisabledButton", None)
+_RequestChat = getattr(pyro_types, "KeyboardButtonRequestChat", None)
+_ButtonStyle = getattr(enums, "ButtonStyle", None)
+
+HAS_COPY_BUTTON = _CopyTextButton is not None and _accepts(
+    pyro_types.InlineKeyboardButton, "copy_text"
+)
+HAS_DISABLED_BUTTON = _DisabledButton is not None and _accepts(
+    pyro_types.InlineKeyboardButton, "disabled"
+)
+HAS_BUTTON_STYLE = _ButtonStyle is not None and _accepts(
+    pyro_types.InlineKeyboardButton, "style"
+)
+HAS_CHAT_PICKER = _RequestChat is not None and _accepts(
+    pyro_types.KeyboardButton, "request_chat"
+)
+HAS_KEYBOARD_HINTS = _accepts(
+    pyro_types.ReplyKeyboardMarkup, "is_persistent"
+) and _accepts(pyro_types.ReplyKeyboardMarkup, "placeholder")
+
+
+def capability_summary() -> str:
+    """Which optional button kinds this kurigram supports, for the startup log."""
+    return " ".join(
+        f"{name}={'yes' if ok else 'no'}"
+        for name, ok in (
+            ("copy", HAS_COPY_BUTTON),
+            ("disabled", HAS_DISABLED_BUTTON),
+            ("style", HAS_BUTTON_STYLE),
+            ("chat_picker", HAS_CHAT_PICKER),
+            ("kbd_hints", HAS_KEYBOARD_HINTS),
+        )
+    )
 
 
 # --- Persistent reply keyboard ------------------------------------------------
@@ -552,30 +612,36 @@ def handle_callback(
 def _to_button(label: str, data: str, *, plain: bool):
     """One (label, data) pair → an ``InlineKeyboardButton``, or None if dropped.
 
-    ``plain`` degrades the newer button kinds for a client or server that won't
-    take them: a disabled button becomes the ordinary button it wraps, and a copy
-    button — which has no equivalent — is dropped.
+    Two independent reasons to fall back, both landing on the same branches:
+    ``plain`` for a Telegram that refuses a button kind, and the ``HAS_*`` flags
+    for a kurigram that does not have it. Nothing outside those guards touches an
+    optional type or keyword — which is the bug this function shipped with, where
+    the ``plain`` retry re-ran the same unconditional import and raised the
+    *identical* ImportError it was meant to catch.
     """
-    from pyrogram import enums
-    from pyrogram.types import CopyTextButton, DisabledButton, InlineKeyboardButton
+    InlineKeyboardButton = pyro_types.InlineKeyboardButton
 
     if data.startswith(COPY_PREFIX):
-        if plain:
-            return None
+        if plain or not HAS_COPY_BUTTON:
+            return None  # "copy to clipboard" has no plain equivalent
         return InlineKeyboardButton(
-            label, copy_text=CopyTextButton(text=data[len(COPY_PREFIX) :])
+            label, copy_text=_CopyTextButton(text=data[len(COPY_PREFIX) :])
         )
 
     if data.startswith(DISABLED_PREFIX):
+        # `x:` carries the action the button would have performed, so degrading
+        # re-enables it rather than making it unreachable.
         inner = data[len(DISABLED_PREFIX) :]
-        if plain:
+        if plain or not HAS_DISABLED_BUTTON:
             return InlineKeyboardButton(label, callback_data=inner)
-        return InlineKeyboardButton(label, disabled=DisabledButton())
+        return InlineKeyboardButton(label, disabled=_DisabledButton())
 
-    style = enums.ButtonStyle.DEFAULT
-    if not plain and data.split(":", 1)[0] in _DANGER_HEADS:
-        style = enums.ButtonStyle.DANGER
-    return InlineKeyboardButton(label, callback_data=data, style=style)
+    # Omitted rather than passed as DEFAULT: `style=` itself is unknown to older
+    # constructors, and the parameter default is DEFAULT anyway.
+    extra = {}
+    if not plain and HAS_BUTTON_STYLE and data.split(":", 1)[0] in _DANGER_HEADS:
+        extra["style"] = _ButtonStyle.DANGER
+    return InlineKeyboardButton(label, callback_data=data, **extra)
 
 
 def to_inline_markup(rows: Rows, *, plain: bool = False):
@@ -583,11 +649,10 @@ def to_inline_markup(rows: Rows, *, plain: bool = False):
 
     ``plain=True`` strips the Bot API 9.4/10.2 chrome (styles, disabled and copy
     buttons) and keeps only plain callback buttons. It is the retry shape used by
-    :func:`send_with_markup` when the styled markup is refused, so an unsupported
-    button kind costs the decoration rather than the whole admin surface.
+    :func:`send_with_markup` when the styled markup is refused. A kurigram that
+    lacks a button kind outright is handled a layer down, in :func:`_to_button`,
+    so this stays the same shape on every version.
     """
-    from pyrogram.types import InlineKeyboardMarkup
-
     keyboard = []
     for row in rows:
         buttons = [
@@ -597,39 +662,53 @@ def to_inline_markup(rows: Rows, *, plain: bool = False):
         ]
         if buttons:  # a copy-only row disappears entirely in plain mode
             keyboard.append(buttons)
-    return InlineKeyboardMarkup(keyboard)
+    return pyro_types.InlineKeyboardMarkup(keyboard)
 
 
 async def send_with_markup(send, text: str, rows: Rows, **kwargs):
-    """``await send(text, reply_markup=…)``, retrying once without new chrome.
+    """``await send(text, reply_markup=…)``, degrading the markup, not the message.
 
-    Disabled buttons and button styles are recent Bot API additions that can't be
-    exercised against live Telegram from CI, so a rejection must not be able to
-    take out the menu it decorates. Any failure retries with ``plain=True``; if
-    that fails too the error propagates to the caller's own handler.
+    Three tiers: full chrome → plain callback buttons → **no markup at all**. The
+    last one is the point. An admin surface exists to report state, so delivering
+    the text without its buttons beats delivering nothing — and "the operator saw
+    nothing" is exactly how the missing-``CopyTextButton`` bug presented.
+
+    Markup is built outside the send so a construction failure (a kurigram that
+    can't express the button) is logged separately from a Telegram rejection.
+    ``MessageNotModified`` is a real outcome — identical content — not a markup
+    problem, so it is re-raised untouched from any tier.
     """
     from pyrogram.errors import MessageNotModified
 
-    try:
-        return await send(text, reply_markup=to_inline_markup(rows), **kwargs)
-    except MessageNotModified:
-        raise  # a real outcome (identical content), not a markup problem
-    except Exception:
-        log.warning("inline markup refused; retrying without styled buttons", exc_info=True)
-        return await send(text, reply_markup=to_inline_markup(rows, plain=True), **kwargs)
+    for plain in (False, True):
+        shape = "plain" if plain else "styled"
+        try:
+            markup = to_inline_markup(rows, plain=plain)
+        except Exception:
+            log.warning("could not build %s markup", shape, exc_info=True)
+            continue
+        try:
+            return await send(text, reply_markup=markup, **kwargs)
+        except MessageNotModified:
+            raise
+        except Exception:
+            log.warning("send refused %s markup", shape, exc_info=True)
+    log.warning("falling back to a message with no buttons")
+    return await send(text, reply_markup=None, **kwargs)
 
 
 def to_reply_markup(spec: List[List[str]], lang: str = "en"):
     """Convert a label-row spec into a persistent ``ReplyKeyboardMarkup``."""
-    from pyrogram.types import KeyboardButton, ReplyKeyboardMarkup
-
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(label) for label in row] for row in spec],
-        resize_keyboard=True,
+    extra = {}
+    if HAS_KEYBOARD_HINTS:
         # Keep the menu open instead of collapsing to the "⌨" icon after a tap —
         # the admin surface is a control panel, not a one-shot prompt.
-        is_persistent=True,
-        placeholder=t("kbd_placeholder", lang),
+        extra["is_persistent"] = True
+        extra["placeholder"] = t("kbd_placeholder", lang)
+    return pyro_types.ReplyKeyboardMarkup(
+        [[pyro_types.KeyboardButton(label) for label in row] for row in spec],
+        resize_keyboard=True,
+        **extra,
     )
 
 
@@ -640,19 +719,20 @@ def build_channel_picker_keyboard(lang: str = "en"):
     bot can actually read, so the "add a channel the bot was never added to"
     mistake — which used to surface as a warning in the /addchannel reply and
     then as silence at runtime — can no longer be made.
-    """
-    from pyrogram.types import (
-        KeyboardButton,
-        KeyboardButtonRequestChat,
-        ReplyKeyboardMarkup,
-    )
 
-    return ReplyKeyboardMarkup(
+    Returns ``None`` on a kurigram without the chat picker. The caller then sends
+    no keyboard and suppresses the pick hint, leaving the wizard on typed ids —
+    which is how it always worked and still does.
+    """
+    if not HAS_CHAT_PICKER:
+        return None
+
+    return pyro_types.ReplyKeyboardMarkup(
         [
             [
-                KeyboardButton(
+                pyro_types.KeyboardButton(
                     t("btn_pick_channel", lang),
-                    request_chat=KeyboardButtonRequestChat(
+                    request_chat=_RequestChat(
                         button_id=REQUEST_CHANNEL_BUTTON_ID,
                         chat_is_channel=True,
                         bot_is_member=True,
@@ -661,7 +741,7 @@ def build_channel_picker_keyboard(lang: str = "en"):
                     ),
                 )
             ],
-            [KeyboardButton(t("btn_cancel", lang))],
+            [pyro_types.KeyboardButton(t("btn_cancel", lang))],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
@@ -681,7 +761,7 @@ def build_add_admin_keyboard(lang: str = "en"):
         ReplyKeyboardMarkup,
     )
 
-    return ReplyKeyboardMarkup(
+    return ReplyKeyboardMarkup(  # request_users predates the pin; no probe needed
         [
             [
                 KeyboardButton(

@@ -695,6 +695,22 @@ def register_handlers(
 ###############################################################################
 async def main_async():
     logger.info("=== BOT STARTUP ===")
+    # Версия kurigram и то, какие из новых типов кнопок она вообще умеет.
+    # На проде зависимости ставятся руками, поэтому реально запущенная версия
+    # может отставать от пина в requirements.txt — пусть расхождение видно
+    # в логе при старте, а не всплывает трейсбеком в личке у оператора.
+    try:
+        import pyrogram
+
+        from translator.services.admin_menu import capability_summary
+
+        logger.info(
+            "kurigram %s | optional buttons: %s",
+            pyrogram.__version__,
+            capability_summary(),
+        )
+    except Exception:  # pragma: no cover - чисто диагностика, падать нельзя
+        logger.warning("could not report kurigram capabilities", exc_info=True)
     # --- Single-instance guard ---
     # Exclusive advisory lock: refuses to start if another instance is running
     # (even an idle one), preventing duplicate posting. Released on process exit.

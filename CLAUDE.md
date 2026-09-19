@@ -197,12 +197,30 @@ receives DMs directly — no PTB polling is involved.
   `copy:<text>` → `CopyTextButton` (7.11) and `x:<data>` → `DisabledButton`
   (10.2), decoded in `to_inline_markup`; destructive heads (`rmchok`, `rmadminok`)
   render `ButtonStyle.DANGER` (9.4). Telegram fires no callback query for either
-  kind, so `handle_callback` never sees those prefixes. **Menu sends go through
-  `send_with_markup`**, which retries once with `plain=True` if Telegram refuses
-  the markup — a disabled button then degrades to the ordinary button it wraps
-  (`x:` carries the action it would have performed) and copy buttons drop out.
-  None of this chrome can be exercised against live Telegram from CI, so the
-  fallback is what keeps an unsupported button kind from taking out the menu.
+  kind, so `handle_callback` never sees those prefixes.
+- **Every button kind newer than Bot API 7.x is optional and probed at import.**
+  `admin_menu` resolves `HAS_COPY_BUTTON` / `HAS_DISABLED_BUTTON` /
+  `HAS_BUTTON_STYLE` / `HAS_CHAT_PICKER` / `HAS_KEYBOARD_HINTS` once, checking
+  **both** that the type exists (`getattr(pyro_types, …)`) and that the
+  constructor takes the keyword (`_accepts`) — an older `InlineKeyboardButton`
+  imports fine while `style=` is still a `TypeError`. Nothing outside those
+  guards may reference an optional type, and **no function may `from
+  pyrogram.types import` one**: that is exactly the bug that took the menu down
+  in production, where the `plain=True` fallback re-ran the same unconditional
+  import and raised the *identical* `ImportError` it existed to catch.
+  Why this matters here: dependencies on the PythonAnywhere host are installed
+  by hand and there is no CI, so the kurigram actually running routinely lags
+  `requirements.txt` (it ran the new menu code against 2.2.23, which has no
+  `CopyTextButton`). `main_async` logs the version and the resolved flags at
+  startup so the next skew is a line in `bot.log`, not a traceback DM'd mid-tap.
+- **`send_with_markup` degrades the markup, never the message**: full chrome →
+  plain callback buttons → **no markup at all**. Markup is built outside the send
+  so a construction failure is logged separately from a Telegram rejection, and
+  `MessageNotModified` is re-raised untouched from any tier. A disabled button
+  degrades to the ordinary button it wraps (`x:` carries the action), copy
+  buttons drop out, and an emptied row is skipped — so degrading never makes an
+  action unreachable. "The operator saw nothing" was the real symptom; the last
+  tier exists to make that impossible.
 - **Preset lists track `config.py`, not the docs.** `MODEL_PRESETS` /
   `TOKEN_PRESETS` / `EFFORT_PRESETS` went stale once (the menu still said
   "Haiku 4.5 (default)" after the default became Sonnet 5), so which preset is
@@ -238,7 +256,9 @@ receives DMs directly — no PTB polling is involved.
   path, but the button path now makes it unmakeable: the add-channel wizard
   (`services/admin_wizard.py`) offers Telegram's **native chat picker**
   (`KeyboardButtonRequestChat` with `chat_is_channel` + `bot_is_member`), so only
-  channels the bot can already read are listed. A pick arrives as a `chat_shared`
+  channels the bot can already read are listed. `build_channel_picker_keyboard`
+  returns `None` where `HAS_CHAT_PICKER` is false, and `_reply_for_wizard` then
+  suppresses the pick hint too rather than advertising a button that isn't there. A pick arrives as a `chat_shared`
   service message and is fed into `admin_wizard.feed()` exactly as a typed id
   would be, so both routes share one validation path and one commit. Typed ids
   still work. `admin_wizard.current_step()` is what the Pyrogram layer reads to

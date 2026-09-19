@@ -17,7 +17,9 @@ Three groups, matching three distinct failure modes:
 
 import logging
 import os
+import sys
 import types
+from unittest.mock import patch
 
 import pytest
 
@@ -581,3 +583,180 @@ def test_channel_picker_only_offers_channels_the_bot_can_read(admin_env):
     assert request.chat_is_channel is True
     assert request.bot_is_member is True
     assert request.button_id == admin_menu.REQUEST_CHANNEL_BUTTON_ID
+
+
+# --------------------------------------------------------------------------- #
+# G. Degrading onto an older kurigram
+#
+# Production installs dependencies by hand and ran the new menu code against
+# kurigram 2.2.23, which has no CopyTextButton. The first version of this module
+# imported that type unconditionally inside `_to_button`, so the `plain=True`
+# fallback re-entered the same import and raised the *identical* ImportError it
+# existed to catch — the admin saw nothing at all.
+#
+# `_accepts` is tested directly; the rest simulate an old kurigram by stubbing
+# `pyrogram.types` and/or clearing the HAS_* flags. The stub is what gives these
+# teeth: a function-level `from pyrogram.types import CopyTextButton` creeping
+# back in fails them even though this container's kurigram *has* the type.
+# --------------------------------------------------------------------------- #
+
+
+def _kurigram_without(*names):
+    """A ``pyrogram.types`` stand-in missing ``names``, like an older kurigram."""
+    import pyrogram.types as real
+
+    stub = types.ModuleType("pyrogram.types")
+    for key, value in vars(real).items():
+        if key not in names:
+            setattr(stub, key, value)
+    return stub
+
+
+class _Old:
+    """A constructor that predates a keyword argument."""
+
+    def __init__(self, text):
+        self.text = text
+
+
+class _New:
+    def __init__(self, text, style=None):
+        self.text, self.style = text, style
+
+
+def test_accepts_detects_a_missing_keyword():
+    # The probe behind every flag below: a type existing does not mean its
+    # constructor takes the newer argument.
+    assert admin_menu._accepts(_New, "style") is True
+    assert admin_menu._accepts(_Old, "style") is False
+
+
+def test_accepts_survives_an_unintrospectable_constructor():
+    assert admin_menu._accepts(object, "style") in (True, False)  # must not raise
+
+
+def test_this_kurigram_supports_everything(admin_env):
+    """Sanity: the pinned 2.2.26 has it all, so the tests below really are
+    testing the degraded path and not silently passing on a stripped runtime."""
+    assert admin_menu.HAS_COPY_BUTTON
+    assert admin_menu.HAS_DISABLED_BUTTON
+    assert admin_menu.HAS_BUTTON_STYLE
+    assert admin_menu.HAS_CHAT_PICKER
+    assert "copy=yes" in admin_menu.capability_summary()
+
+
+def _strip(monkeypatch, *flags):
+    for flag in flags:
+        monkeypatch.setattr(admin_menu, flag, False)
+
+
+def test_markup_builds_when_the_button_types_are_absent(monkeypatch):
+    """The reported crash, as a test.
+
+    Not `plain=True` — this is the *normal* path on an old kurigram, which is
+    exactly the case the original fallback never considered.
+    """
+    _strip(monkeypatch, "HAS_COPY_BUTTON", "HAS_DISABLED_BUTTON", "HAS_BUTTON_STYLE")
+    rows = [
+        [("Sonnet 5", "x:set:model:claude-sonnet-5")],
+        [("Copy", "copy:claude-sonnet-5")],
+        [("Yes, remove", "rmchok:foo"), ("No", "nav:rmch")],
+    ]
+    with patch.dict(
+        sys.modules,
+        {"pyrogram.types": _kurigram_without("CopyTextButton", "DisabledButton")},
+    ):
+        markup = admin_menu.to_inline_markup(rows)
+
+    data = [b.callback_data for row in markup.inline_keyboard for b in row]
+    # The disabled entry comes back as the action it wrapped — still reachable.
+    assert "set:model:claude-sonnet-5" in data
+    assert "rmchok:foo" in data and "nav:rmch" in data
+    # The copy button has no equivalent, so its row disappears rather than
+    # being sent empty (Telegram rejects an empty row).
+    assert len(markup.inline_keyboard) == 2
+
+
+def test_no_unsupported_kwarg_reaches_the_constructor(monkeypatch):
+    # An old InlineKeyboardButton has no `style=`; passing it is a TypeError even
+    # though the class itself imports fine.
+    _strip(monkeypatch, "HAS_BUTTON_STYLE")
+    captured = {}
+
+    real = admin_menu.pyro_types.InlineKeyboardButton
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(admin_menu.pyro_types, "InlineKeyboardButton", spy)
+    admin_menu.to_inline_markup([[("Yes", "rmchok:foo")]])
+    assert "style" not in captured
+
+
+def test_reply_keyboard_skips_hints_when_unsupported(monkeypatch):
+    _strip(monkeypatch, "HAS_KEYBOARD_HINTS")
+    markup = admin_menu.to_reply_markup(admin_menu.build_reply_keyboard("en"), "en")
+    assert markup.is_persistent is None
+    assert markup.placeholder is None
+    assert markup.keyboard, "the keyboard itself must still render"
+
+
+def test_channel_picker_is_none_without_support(monkeypatch):
+    _strip(monkeypatch, "HAS_CHAT_PICKER")
+    assert admin_menu.build_channel_picker_keyboard("en") is None
+
+
+async def test_wizard_does_not_promise_a_picker_it_cannot_show(
+    admin_env, monkeypatch
+):
+    """Falling back to typed ids is fine; advertising a missing button is not."""
+    _strip(monkeypatch, "HAS_CHAT_PICKER")
+    dispatch = _dispatcher()
+    admin_wizard.start(111)
+    await dispatch(object(), _RecordingMsg(111, text="nopicker"))
+
+    msg = _RecordingMsg(111, text="-1005555555555")
+    await dispatch(object(), msg)
+    text, markup = msg.replies[-1]
+    assert markup is None or not _is_picker(markup)
+    assert admin_i18n.t("wiz_pick_hint", "en") not in text
+    # ...and the typed id was still accepted.
+    assert admin_wizard.current_step(111) == "dst"
+
+
+async def test_message_is_delivered_even_when_no_markup_works():
+    """The operator's text matters more than the buttons.
+
+    "Saw nothing at all" was the actual symptom of the production crash, so the
+    last tier drops the markup rather than the message.
+    """
+    attempts = []
+
+    async def send(text, **kwargs):
+        attempts.append(kwargs["reply_markup"])
+        if kwargs["reply_markup"] is not None:
+            raise ValueError("BUTTON_TYPE_INVALID")
+        return "delivered"
+
+    result = await admin_menu.send_with_markup(send, "status", [[("a", "nav:ai")]])
+    assert result == "delivered"
+    assert attempts[-1] is None
+    assert len(attempts) == 3  # styled, plain, bare
+
+
+async def test_startup_survives_missing_command_types(admin_env, caplog):
+    """The worse latent bug: these imports sat OUTSIDE the try, and this runs at
+    startup right after pyro.start() — so on an old kurigram the bot would not
+    have started at all."""
+    fake = _FakePyroCommands()
+    with patch.dict(
+        sys.modules,
+        {"pyrogram.types": _kurigram_without("BotCommandScopeChat", "MenuButtonCommands")},
+    ):
+        with caplog.at_level(logging.WARNING, logger="ADMIN"):
+            published = await admin_commands.publish_admin_commands(fake)
+
+    assert published == 0, "must report failure, not raise"
+    assert fake.commands == []
+    assert any("command menu" in r.getMessage() for r in caplog.records)
