@@ -760,3 +760,203 @@ async def test_startup_survives_missing_command_types(admin_env, caplog):
     assert published == 0, "must report failure, not raise"
     assert fake.commands == []
     assert any("command menu" in r.getMessage() for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# H. Rich-message menus (Bot API 10.3 / Telegram 12.10)
+#
+# Buttons inside the message body rather than on the keyboard strip below it.
+# Double-gated: the kurigram probe AND an opt-in env flag, because the rich HTML
+# dialect is validated only by Telegram's servers -- kurigram passes `html=`
+# straight through -- so none of it can be exercised from here. What these tests
+# pin down is the string we generate, the guard that keeps unconfirmed syntax off
+# the wire, and that the tier degrades instead of breaking a menu.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def rich_on(monkeypatch):
+    """Both gates open."""
+    monkeypatch.setattr(admin_menu, "HAS_RICH_MESSAGES", True)
+    monkeypatch.setenv(admin_menu.RICH_MENUS_ENV, "1")
+
+
+def test_rich_menus_are_off_by_default(monkeypatch):
+    """The default path must stay exactly what it is today.
+
+    Production has been running a kurigram older than the pin, so a new send
+    path must not switch itself on just because the library supports it.
+    """
+    monkeypatch.delenv(admin_menu.RICH_MENUS_ENV, raising=False)
+    assert admin_menu.rich_menus_enabled() is False
+
+
+def test_env_flag_alone_is_not_enough(monkeypatch):
+    monkeypatch.setattr(admin_menu, "HAS_RICH_MESSAGES", False)
+    monkeypatch.setenv(admin_menu.RICH_MENUS_ENV, "1")
+    assert admin_menu.rich_menus_enabled() is False
+
+
+def test_this_kurigram_supports_rich_messages():
+    # Sanity: 2.2.26 has both the send and the edit half. The edit half is the
+    # one that matters -- the menu tree navigates by editing one message.
+    assert admin_menu.HAS_RICH_MESSAGES
+    assert "rich=yes" in admin_menu.capability_summary()
+
+
+def test_rich_html_wraps_each_row_in_a_button_row():
+    out = admin_menu.rows_to_rich_html(
+        "<b>Settings</b>", [[("A", "nav:a"), ("B", "nav:b")], [("C", "nav:c")]]
+    )
+    assert out.startswith("<b>Settings</b>")
+    assert out.count("<tg-button-row>") == 2
+    assert '<tg-button type="callback_data" data="nav:a">A</tg-button>' in out
+    assert '<tg-button type="callback_data" data="nav:c">C</tg-button>' in out
+
+
+def test_rich_html_escapes_labels_and_callback_data():
+    """Labels come from channel names and admin labels, so neither is trusted.
+
+    An unescaped quote would break out of the data attribute.
+    """
+    out = admin_menu.rows_to_rich_html("t", [[('a "x" & <b>', 'rmchok:my"chan')]])
+    assert 'data="rmchok:my&quot;chan"' in out
+    assert "&quot;x&quot; &amp; &lt;b&gt;" in out
+    # ...and the raw forms are gone, so the label can't close the attribute or
+    # inject a tag of its own.
+    assert 'my"chan' not in out
+    assert "<b>" not in out.removeprefix("t")
+
+
+@pytest.mark.parametrize(
+    "data", ["copy:claude-sonnet-5", "x:set:model:claude-sonnet-5"]
+)
+def test_rich_html_refuses_menus_with_unconfirmed_button_kinds(data):
+    """Only `type="callback_data"` is a confirmed spelling in this dialect.
+
+    Rather than guess an attribute for copy/disabled buttons, the whole menu
+    opts out and renders as it does today -- all-or-nothing, so a single
+    unsupported button can never silently vanish from a row.
+    """
+    assert admin_menu.rows_to_rich_html("t", [[("ok", "nav:a")], [("?", data)]]) is None
+
+
+def test_real_menus_split_between_the_two_renderings(admin_env):
+    # Settings is all-callback, so it can go rich; Model carries a copy button
+    # for the live model id, so it must not.
+    settings_title, settings_rows = admin_menu.build_menu("settings")
+    model_title, model_rows = admin_menu.build_menu("model")
+    assert admin_menu.rows_to_rich_html(settings_title, settings_rows) is not None
+    assert admin_menu.rows_to_rich_html(model_title, model_rows) is None
+
+
+async def test_rich_is_tried_first_when_enabled(rich_on):
+    calls = []
+
+    async def send(text, **kw):
+        calls.append("keyboard")
+        return "keyboard"
+
+    async def send_rich(rich):
+        calls.append(("rich", rich.html))
+        return "rich"
+
+    result = await admin_menu.send_with_markup(
+        send, "<b>t</b>", [[("A", "nav:a")]], send_rich=send_rich
+    )
+    assert result == "rich"
+    assert calls[0][0] == "rich"
+    assert "<tg-button-row>" in calls[0][1]
+    assert "keyboard" not in calls, "the keyboard tiers must not also run"
+
+
+async def test_rich_is_skipped_when_the_flag_is_off(monkeypatch):
+    monkeypatch.delenv(admin_menu.RICH_MENUS_ENV, raising=False)
+    calls = []
+
+    async def send(text, **kw):
+        calls.append("keyboard")
+        return "keyboard"
+
+    async def send_rich(rich):  # pragma: no cover - must never run
+        calls.append("rich")
+        return "rich"
+
+    result = await admin_menu.send_with_markup(
+        send, "t", [[("A", "nav:a")]], send_rich=send_rich
+    )
+    assert result == "keyboard"
+    assert calls == ["keyboard"]
+
+
+async def test_rich_is_skipped_for_a_menu_it_cannot_express(rich_on):
+    calls = []
+
+    async def send(text, **kw):
+        calls.append("keyboard")
+        return "keyboard"
+
+    async def send_rich(rich):  # pragma: no cover - must never run
+        calls.append("rich")
+        return "rich"
+
+    # A copy button in the menu -> straight to the keyboard tier.
+    result = await admin_menu.send_with_markup(
+        send, "t", [[("c", "copy:x")]], send_rich=send_rich
+    )
+    assert result == "keyboard"
+    assert calls == ["keyboard"]
+
+
+async def test_a_rejected_rich_send_falls_through_to_the_keyboard(rich_on):
+    """The dialect is server-validated only, so being wrong must cost the
+    decoration and nothing else."""
+    calls = []
+
+    async def send(text, **kw):
+        calls.append("keyboard")
+        return "keyboard"
+
+    async def send_rich(rich):
+        calls.append("rich")
+        raise ValueError("RICH_MESSAGE_INVALID")
+
+    result = await admin_menu.send_with_markup(
+        send, "t", [[("A", "nav:a")]], send_rich=send_rich
+    )
+    assert result == "keyboard"
+    assert calls == ["rich", "keyboard"]
+
+
+async def test_rich_still_reaches_the_bare_tier_when_everything_fails(rich_on):
+    attempts = []
+
+    async def send(text, **kw):
+        attempts.append(kw["reply_markup"])
+        if kw["reply_markup"] is not None:
+            raise ValueError("BUTTON_TYPE_INVALID")
+        return "delivered"
+
+    async def send_rich(rich):
+        raise ValueError("RICH_MESSAGE_INVALID")
+
+    result = await admin_menu.send_with_markup(
+        send, "t", [[("A", "nav:a")]], send_rich=send_rich
+    )
+    assert result == "delivered"
+    assert attempts[-1] is None
+
+
+async def test_message_not_modified_is_not_swallowed_by_the_rich_tier(rich_on):
+    from pyrogram.errors import MessageNotModified
+
+    async def send(text, **kw):  # pragma: no cover - must never run
+        raise AssertionError("must not fall through on MessageNotModified")
+
+    async def send_rich(rich):
+        raise MessageNotModified
+
+    with pytest.raises(MessageNotModified):
+        await admin_menu.send_with_markup(
+            send, "t", [[("A", "nav:a")]], send_rich=send_rich
+        )

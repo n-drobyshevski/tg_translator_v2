@@ -266,8 +266,27 @@ receives DMs directly — no PTB polling is involved.
   `requirements.txt` (it ran the new menu code against 2.2.23, which has no
   `CopyTextButton`). `main_async` logs the version and the resolved flags at
   startup so the next skew is a line in `bot.log`, not a traceback DM'd mid-tap.
-- **`send_with_markup` degrades the markup, never the message**: full chrome →
-  plain callback buttons → **no markup at all**. Markup is built outside the send
+- **Rich-message menus (Bot API 10.3 / Telegram 12.10), off by default.** Buttons
+  *inside* the message body rather than on the keyboard strip below it.
+  `rows_to_rich_html` appends a `<tg-button-row>` per row to the HTML title the
+  menu already builds — the rich dialect accepts the same inline tags, so titles
+  need no second rendering path. **Double-gated**: `HAS_RICH_MESSAGES` (which
+  requires the *edit* half, `rich_message=` on `edit_message_text` — the menu tree
+  navigates by editing one message in place) **and** the env flag
+  `ADMIN_RICH_MENUS`, read live so `/reload` picks it up.
+
+  Two things to know before touching it. `InputRichMessage(html=…)` is passed
+  **straight to Telegram** — kurigram does no local parsing — so the dialect is
+  server-validated only and cannot be tested from CI; only
+  `type="callback_data"` is a confirmed spelling, which is why
+  `rows_to_rich_html` returns `None` for any menu containing a `copy:` or `x:`
+  button rather than guessing an attribute (all-or-nothing per menu, so an
+  unsupported button can't silently vanish from a row). And the rich send needs
+  its **own callable** (`send_rich`), not another kwarg: `Message.reply_text`
+  does not accept `rich_message` — only `reply_rich` and the edit methods do.
+- **`send_with_markup` degrades the markup, never the message**: rich (when
+  enabled and expressible) → full chrome → plain callback buttons → **no markup
+  at all**. Markup is built outside the send
   so a construction failure is logged separately from a Telegram rejection, and
   `MessageNotModified` is re-raised untouched from any tier. A disabled button
   degrades to the ordinary button it wraps (`x:` carries the action), copy

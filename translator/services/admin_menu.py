@@ -27,11 +27,13 @@ from __future__ import annotations
 import html
 import inspect
 import logging
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from pyrogram import enums
 from pyrogram import types as pyro_types
+from pyrogram.client import Client
 
 from translator.config import CONFIG
 from translator.services import (
@@ -85,12 +87,17 @@ _DANGER_HEADS = frozenset({"rmchok", "rmadminok"})
 # still a TypeError there.
 
 
+def _accepts_arg(func, param: str) -> bool:
+    """True if the callable ``func`` takes ``param``."""
+    try:
+        return param in inspect.signature(func).parameters
+    except (TypeError, ValueError):  # unintrospectable (C-implemented) callable
+        return False
+
+
 def _accepts(cls, param: str) -> bool:
     """True if ``cls.__init__`` takes ``param``."""
-    try:
-        return param in inspect.signature(cls.__init__).parameters
-    except (TypeError, ValueError):  # unintrospectable (C-implemented) __init__
-        return False
+    return _accepts_arg(cls.__init__, param)
 
 
 _CopyTextButton = getattr(pyro_types, "CopyTextButton", None)
@@ -114,6 +121,31 @@ HAS_KEYBOARD_HINTS = _accepts(
     pyro_types.ReplyKeyboardMarkup, "is_persistent"
 ) and _accepts(pyro_types.ReplyKeyboardMarkup, "placeholder")
 
+# Bot API 10.3 / Telegram 12.10: buttons *inside* the message body rather than on
+# the keyboard strip below it. Needs a send path (`Message.reply_rich`) and an
+# edit path (`rich_message=` on edit_message_text) — the menu tree navigates by
+# editing one message in place, so without the latter this would be unusable.
+HAS_RICH_MESSAGES = (
+    hasattr(Client, "send_rich_message")
+    and getattr(pyro_types, "InputRichMessage", None) is not None
+    and getattr(pyro_types, "RichMessageButton", None) is not None
+    and hasattr(pyro_types.Message, "reply_rich")
+    and _accepts_arg(pyro_types.CallbackQuery.edit_message_text, "rich_message")
+)
+
+# Second gate, read live so it can be flipped with a `/reload` rather than a
+# restart. Default OFF on purpose: the rich HTML dialect is validated only by
+# Telegram's servers (kurigram passes `html=` straight through), and production
+# has been running a kurigram older than the pin. Opt in once, deliberately.
+RICH_MENUS_ENV = "ADMIN_RICH_MENUS"
+
+
+def rich_menus_enabled() -> bool:
+    """True when rich-message menus are both supported and switched on."""
+    if not HAS_RICH_MESSAGES:
+        return False
+    return os.getenv(RICH_MENUS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def capability_summary() -> str:
     """Which optional button kinds this kurigram supports, for the startup log."""
@@ -125,6 +157,8 @@ def capability_summary() -> str:
             ("style", HAS_BUTTON_STYLE),
             ("chat_picker", HAS_CHAT_PICKER),
             ("kbd_hints", HAS_KEYBOARD_HINTS),
+            ("rich", HAS_RICH_MESSAGES),
+            ("rich_enabled", rich_menus_enabled()),
         )
     )
 
@@ -665,7 +699,39 @@ def to_inline_markup(rows: Rows, *, plain: bool = False):
     return pyro_types.InlineKeyboardMarkup(keyboard)
 
 
-async def send_with_markup(send, text: str, rows: Rows, **kwargs):
+def rows_to_rich_html(title_html: str, rows: Rows) -> Optional[str]:
+    """Render a menu as rich-message HTML, or None if it can't be expressed.
+
+    Buttons become ``<tg-button-row>`` blocks appended to the title HTML the
+    menus already build — the rich dialect accepts the same inline tags the
+    titles use (``b i u s code a tg-spoiler`` plus ``p pre blockquote``), so the
+    titles need no second rendering path.
+
+    Returns **None** when any button is a copy or disabled button. Only
+    ``type="callback_data"`` is a confirmed spelling in this dialect; rather than
+    guess an attribute name for the others, those menus skip the rich tier and
+    render exactly as they do today. Menus are all-or-nothing here so a single
+    unsupported button can never silently vanish from a row.
+    """
+    parts = [title_html]
+    for row in rows:
+        buttons = []
+        for label, data in row:
+            if data.startswith((COPY_PREFIX, DISABLED_PREFIX)):
+                return None
+            # Both go into HTML *attributes* or element text, and labels are
+            # interpolated from channel names and admin labels, so neither is
+            # trusted: escape both.
+            buttons.append(
+                f'<tg-button type="callback_data" data="{html.escape(data)}">'
+                f"{html.escape(label)}</tg-button>"
+            )
+        if buttons:
+            parts.append(f"<tg-button-row>{''.join(buttons)}</tg-button-row>")
+    return "".join(parts)
+
+
+async def send_with_markup(send, text: str, rows: Rows, *, send_rich=None, **kwargs):
     """``await send(text, reply_markup=…)``, degrading the markup, not the message.
 
     Three tiers: full chrome → plain callback buttons → **no markup at all**. The
@@ -677,8 +743,29 @@ async def send_with_markup(send, text: str, rows: Rows, **kwargs):
     can't express the button) is logged separately from a Telegram rejection.
     ``MessageNotModified`` is a real outcome — identical content — not a markup
     problem, so it is re-raised untouched from any tier.
+
+    ``send_rich`` is an optional separate callable taking an ``InputRichMessage``.
+    It has to be separate rather than another kwarg on ``send``: the first send of
+    a menu goes through ``Message.reply_text``, which does **not** accept
+    ``rich_message`` — only ``reply_rich`` and the edit methods do. When it is
+    given and rich menus are switched on, it becomes the top tier; a rejection
+    there (the dialect is validated only by Telegram) falls through to the
+    keyboard tiers below, which is what makes an unverifiable dialect safe.
     """
     from pyrogram.errors import MessageNotModified
+
+    if send_rich is not None and rich_menus_enabled():
+        rich_html = rows_to_rich_html(text, rows)
+        if rich_html is not None:
+            try:
+                return await send_rich(pyro_types.InputRichMessage(html=rich_html))
+            except MessageNotModified:
+                raise
+            except Exception:
+                log.warning(
+                    "send refused rich markup; falling back to a keyboard",
+                    exc_info=True,
+                )
 
     for plain in (False, True):
         shape = "plain" if plain else "styled"
@@ -870,10 +957,20 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
                 text, parse_mode=enums.ParseMode.HTML, **kw
             )
 
+        async def _edit_rich(rich):
+            # `text` stays positional (it is required); `rich_message` supersedes
+            # it, and parse_mode is omitted — the rich dialect carries its own.
+            return await cq.edit_message_text(
+                admin_commands._truncate(result.text), rich_message=rich
+            )
+
         try:
             if result.rows:
                 await send_with_markup(
-                    _edit, admin_commands._truncate(result.text), result.rows
+                    _edit,
+                    admin_commands._truncate(result.text),
+                    result.rows,
+                    send_rich=_edit_rich if HAS_RICH_MESSAGES else None,
                 )
             else:
                 await _edit(admin_commands._truncate(result.text), reply_markup=None)

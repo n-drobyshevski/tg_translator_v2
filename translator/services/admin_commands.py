@@ -853,7 +853,14 @@ def register_admin_handlers(
                 )
 
             try:
-                await admin_menu.send_with_markup(_send, title, rows)
+                await admin_menu.send_with_markup(
+                    _send,
+                    title,
+                    rows,
+                    # getattr, not msg.reply_rich: on a kurigram without rich
+                    # messages the attribute lookup itself would raise.
+                    send_rich=getattr(msg, "reply_rich", None),
+                )
             except Exception:
                 log.exception("failed to send %s menu", token)
             return
