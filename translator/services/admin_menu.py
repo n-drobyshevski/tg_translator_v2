@@ -133,10 +133,14 @@ HAS_RICH_MESSAGES = (
     and _accepts_arg(pyro_types.CallbackQuery.edit_message_text, "rich_message")
 )
 
-# Second gate, read live so it can be flipped with a `/reload` rather than a
-# restart. Default OFF on purpose: the rich HTML dialect is validated only by
-# Telegram's servers (kurigram passes `html=` straight through), and production
-# has been running a kurigram older than the pin. Opt in once, deliberately.
+# Second gate. Read from os.environ per send rather than frozen at import, but
+# note that adding it to `.env` still needs a **restart**: `load_dotenv()` runs
+# once at import in config.py and `CONFIG.reload()` only re-reads os.environ, so
+# `/reload` will not see a key that was not already there.
+#
+# Default OFF on purpose: the rich HTML dialect is validated only by Telegram's
+# servers (kurigram passes `html=` straight through), and production has been
+# running a kurigram older than the pin. Opt in once, deliberately.
 RICH_MENUS_ENV = "ADMIN_RICH_MENUS"
 
 

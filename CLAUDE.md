@@ -273,7 +273,12 @@ receives DMs directly — no PTB polling is involved.
   need no second rendering path. **Double-gated**: `HAS_RICH_MESSAGES` (which
   requires the *edit* half, `rich_message=` on `edit_message_text` — the menu tree
   navigates by editing one message in place) **and** the env flag
-  `ADMIN_RICH_MENUS`, read live so `/reload` picks it up.
+  `ADMIN_RICH_MENUS`. The flag is read per send rather than frozen at import, but
+  adding it to `.env` still needs a **bot restart**, not `/reload`: `load_dotenv()`
+  runs once at import in `config.py` and `CONFIG.reload()` only re-reads
+  `os.environ`, so a key that was not already there stays invisible. (The DM
+  writers escape this because `env_store.set_env_var` writes to `os.environ` too —
+  there is no DM command for this flag.)
 
   Two things to know before touching it. `InputRichMessage(html=…)` is passed
   **straight to Telegram** — kurigram does no local parsing — so the dialect is
