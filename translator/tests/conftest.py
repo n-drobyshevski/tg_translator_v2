@@ -10,6 +10,7 @@ and a test that makes rich sends fail would otherwise trip it for later tests.
 import pytest
 
 from translator.services import admin_menu, rich_html
+from translator.utils import custom_emoji
 
 
 @pytest.fixture(autouse=True)
@@ -21,5 +22,7 @@ def _rich_defaults(monkeypatch):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
     admin_menu._breaker.reset()
+    custom_emoji.reset()  # a refusal recorded by one test must not flatten the next
     yield
     admin_menu._breaker.reset()
+    custom_emoji.reset()

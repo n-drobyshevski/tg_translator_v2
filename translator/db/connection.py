@@ -36,6 +36,7 @@ _ADDED_COLUMNS = [
     ("cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("model_used", "TEXT NOT NULL DEFAULT ''"),
+    ("dest_message_ids", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

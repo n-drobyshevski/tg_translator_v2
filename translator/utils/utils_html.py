@@ -1,10 +1,11 @@
 import html
-import os
 import re
 from typing import Any, List, Optional
 
 from pyrogram.parser.html import HTML
 from pyrogram.parser import utils as parser_utils
+
+from translator.utils import custom_emoji
 
 # kurigram's HTML.unparse renders every entity type (bold, italic, underline,
 # strikethrough, spoiler, code, pre, blockquote / expandable blockquote, links,
@@ -13,7 +14,6 @@ from pyrogram.parser import utils as parser_utils
 # Telegram Bot API HTML parser; the regexes below rewrite or drop them.
 _SPOILER_OPEN_RE = re.compile(r"<spoiler>")
 _SPOILER_CLOSE_RE = re.compile(r"</spoiler>")
-_TG_EMOJI_RE = re.compile(r"<tg-emoji\b[^>]*>(.*?)</tg-emoji>", re.DOTALL)
 _TG_TIME_RE = re.compile(r"<tg-time\b[^>]*>(.*?)</tg-time>", re.DOTALL)
 # A code block carrying a language: kurigram emits ``<pre language="x">…</pre>``,
 # which the Bot API rejects. The Bot API expresses a language via a nested
@@ -26,19 +26,12 @@ _PRE_OPEN_RE = re.compile(r"<pre\b[^>]*>")
 def _preserve_custom_emoji() -> bool:
     """Whether ``<tg-emoji>`` should reach Telegram instead of being flattened.
 
-    Off by default, and that default is the safe one: Bot API 9.4 (2026-02-09)
-    lets bots put custom emoji in messages, but only emoji the bot may actually
-    use — a mirrored post's emoji generally come from the *source* channel, and
-    Telegram rejects the whole message if the bot can't use one. Worth turning on
-    only when the destination channel's emoji belong to the bot (e.g. a branded
-    channel with its own sticker set). Same env var as the admin app's sanitizer.
+    Decided by :mod:`translator.utils.custom_emoji` (``PRESERVE_CUSTOM_EMOJI``,
+    default ``auto``): kept unless Telegram recently refused them. A bot may use
+    custom emoji in a channel only with a Fragment username, so the sender
+    re-sends a refused post with plain emoji rather than lose it.
     """
-    return os.getenv("PRESERVE_CUSTOM_EMOJI", "").strip().lower() not in (
-        "",
-        "0",
-        "false",
-        "no",
-    )
+    return custom_emoji.should_preserve()
 
 
 def _to_bot_api_html(rendered: str) -> str:
@@ -47,8 +40,8 @@ def _to_bot_api_html(rendered: str) -> str:
     - ``<spoiler>`` → ``<tg-spoiler>`` (Bot API spelling).
     - Drop ``<tg-time>`` wrappers, keeping their inner text: the Bot API HTML
       dialect has no date tag, so the formatted date is the correct output.
-    - Drop ``<tg-emoji>`` the same way unless ``PRESERVE_CUSTOM_EMOJI`` is set
-      (see ``_preserve_custom_emoji`` for why flattening is the safe default).
+    - Drop ``<tg-emoji>`` the same way while custom emoji are unavailable
+      (see ``_preserve_custom_emoji``).
     - ``<pre language="x">…</pre>`` → ``<pre><code class="language-x">…</code></pre>``
       so code-block syntax highlighting survives (the Bot API's supported form);
       bare/attribute-only ``<pre>`` tags are flattened to ``<pre>``.
@@ -56,7 +49,7 @@ def _to_bot_api_html(rendered: str) -> str:
     rendered = _SPOILER_OPEN_RE.sub("<tg-spoiler>", rendered)
     rendered = _SPOILER_CLOSE_RE.sub("</tg-spoiler>", rendered)
     if not _preserve_custom_emoji():
-        rendered = _TG_EMOJI_RE.sub(r"\1", rendered)
+        rendered = custom_emoji.flatten(rendered)
     rendered = _TG_TIME_RE.sub(r"\1", rendered)
     rendered = _PRE_LANG_RE.sub(
         lambda m: f'<pre><code class="language-{html.escape(m.group(1), quote=True)}">'

@@ -91,6 +91,13 @@ class _CapturingPyro:
 
         return deco
 
+    def on_deleted_messages(self, _filt=None):
+        def deco(fn):
+            self.handlers["deleted"] = fn
+            return fn
+
+        return deco
+
 
 class _FakeQueue:
     def __init__(self, meta=None):
@@ -139,7 +146,7 @@ async def test_per_message_recorder_isolation(monkeypatch):
     seen = []
 
     class _Sender(_MediaStubs):
-        async def send_message(self, text, recorder):
+        async def send_message(self, text, recorder, reply_to_message_id=None):
             # Yield so the two handlers genuinely interleave.
             await asyncio.sleep(0)
             seen.append(
@@ -173,7 +180,7 @@ async def test_relay_failure_sends_readable_alert(monkeypatch):
     monkeypatch.setattr(bot, "send_alert", alert)
 
     class _Sender(_MediaStubs):
-        async def send_message(self, text, recorder):
+        async def send_message(self, text, recorder, reply_to_message_id=None):
             raise RuntimeError("boom")
 
     handlers = _wire(monkeypatch, _Sender())
@@ -235,7 +242,7 @@ async def test_long_caption_photo_splits_into_photo_plus_reply(monkeypatch):
     calls = {}
 
     class _Sender(_MediaStubs):
-        async def send_photo_message(self, photo, caption, recorder):
+        async def send_photo_message(self, photo, caption, recorder, reply_to_message_id=None):
             calls["photo_caption"] = caption
             recorder.set(dest_message_id=999)  # the photo's message id
             return True
@@ -271,7 +278,7 @@ async def test_animation_relays_through_send_animation(monkeypatch):
     calls = {}
 
     class _Sender(_MediaStubs):
-        async def send_animation_message(self, animation, caption, recorder):
+        async def send_animation_message(self, animation, caption, recorder, reply_to_message_id=None):
             calls["animation"] = (animation, caption)
             return True
 
@@ -299,7 +306,7 @@ async def test_video_note_posts_bare_note_plus_reply(monkeypatch):
     calls = {}
 
     class _Sender(_MediaStubs):
-        async def send_video_note_message(self, note, caption, recorder):
+        async def send_video_note_message(self, note, caption, recorder, reply_to_message_id=None):
             calls["note"] = (note, caption)
             recorder.set(dest_message_id=555)
             return True
@@ -333,7 +340,7 @@ async def test_media_group_relays_as_one_album(monkeypatch):
     translations = []
 
     class _Sender(_MediaStubs):
-        async def send_media_group(self, album, caption, recorder):
+        async def send_media_group(self, album, caption, recorder, reply_to_message_id=None):
             calls["album"] = album
             calls["caption"] = caption
             recorder.set(dest_message_id=777)
@@ -388,14 +395,14 @@ async def test_unalbumable_group_falls_back_to_separate_posts(monkeypatch):
     sent = []
 
     class _Sender(_MediaStubs):
-        async def send_media_group(self, album, caption, recorder):
+        async def send_media_group(self, album, caption, recorder, reply_to_message_id=None):
             raise AssertionError("must not attempt an album for unsupported types")
 
-        async def send_photo_message(self, photo, caption, recorder):
+        async def send_photo_message(self, photo, caption, recorder, reply_to_message_id=None):
             sent.append(("photo", photo))
             return True
 
-        async def send_voice_message(self, voice, caption, recorder):
+        async def send_voice_message(self, voice, caption, recorder, reply_to_message_id=None):
             sent.append(("voice", voice))
             return True
 

@@ -58,6 +58,12 @@ class MessageEvent:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     model_used: str = ""
+    # Every destination message this post produced, comma-separated, in send
+    # order: text chunks, a caption's remainder reply, every album item. The
+    # first is the post's head (what a reply should point at); all of them are
+    # what a deletion must remove. dest_message_id keeps its historical meaning
+    # (the message the edit path targets).
+    dest_message_ids: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict, keeping all fields (even if empty or zero)."""

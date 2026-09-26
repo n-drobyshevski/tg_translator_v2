@@ -24,7 +24,7 @@ import html
 import signal
 import time
 import sqlite3
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from anthropic import AsyncAnthropic
 from translator.config import CONFIG, CACHE_DIR, LOG_FILE_PATH
@@ -43,12 +43,16 @@ from translator.utils.single_instance import (
     acquire_single_instance_lock,
     AlreadyRunningError,
 )
-from translator.utils.translation_utils import translate_html
+from translator.utils.translation_utils import translate_html, translate_plain
 from translator.utils.message_utils import (
     get_media_info,
     build_payload,
     build_post_link,
     split_caption_html,
+    live_photo_still_id,
+    checklist_to_html,
+    poll_source_fields,
+    build_poll_request,
 )
 from translator.services.telegram_sender import TelegramSender
 from translator.services.media_group_buffer import (
@@ -133,8 +137,38 @@ except OSError as e:
 # edit to such a post must go through editMessageText, not editMessageCaption.
 CAPTIONLESS_MEDIA = frozenset({"video_note"})
 CAPTIONED_MEDIA = frozenset(
-    {"photo", "video", "doc", "animation", "audio", "voice"}
+    {"photo", "live_photo", "video", "doc", "animation", "audio", "voice"}
 )
+
+
+def sync_deletes_enabled() -> bool:
+    """Удаление поста в источнике удаляет и его перевод (``SYNC_DELETES``, по умолчанию вкл.).
+
+    Читается на каждое событие, так что ``/reload`` после правки .env применяет
+    его без перезапуска.
+    """
+    return os.getenv("SYNC_DELETES", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def reply_target(msg) -> Optional[int]:
+    """Id переведённого поста, на который должен отвечать перевод ``msg``.
+
+    Если пост в источнике — ответ на более ранний пост, перевод отвечает на
+    *голову* перевода того поста (первое сообщение: текст, медиа или альбом).
+    None, если это не ответ или оригинал не релеился. Ошибка БД не должна
+    ронять релей — тогда просто без ответа.
+    """
+    reply_id = getattr(msg, "reply_to_message_id", None)
+    if not reply_id:
+        return None
+    try:
+        ids = CONFIG.get_destination_msg_ids(msg.chat.id, reply_id)
+    except Exception:
+        logging.getLogger("PYRO").warning(
+            "reply lookup failed for %s/%s", msg.chat.id, reply_id, exc_info=True
+        )
+        return None
+    return ids[0] if ids else None
 
 
 def _edit_target_mismatch(recorder: EventRecorder) -> bool:
@@ -293,11 +327,19 @@ def register_handlers(
             meta = {}
             html_text = text
 
+        # Чеклист бот в канал отправить не может (sendChecklist — только от
+        # бизнес-аккаунта), поэтому он уходит переведённым текстом.
+        checklist = getattr(msg, "checklist", None)
+        if checklist is not None and not text:
+            html_text = checklist_to_html(checklist)
+            recorder.set(media_type="checklist")
+
         # === 2. Build payload and log original message ===
         payload = build_payload(msg, html_text, meta)
         recorder.set(
             message_id=(getattr(msg, "id", None) or getattr(msg, "message_id", None))
         )
+        reply_head = reply_target(msg)
 
         # === 3. Translate message ===
         translation_start = time.monotonic()
@@ -336,8 +378,26 @@ def register_handlers(
                 cache_creation_tokens=usage.get("cache_creation_tokens", 0),
                 model_used=usage.get("model_used", ""),
             )
+            still_id = live_photo_still_id(msg) if media_type == "live_photo" else None
+
+            async def send_live_photo(video_id, caption, rec, reply_to_message_id=None):
+                # Живое фото = короткое видео + статичный кадр. Если sendLivePhoto
+                # не прошёл, лучше отправить хотя бы кадр, чем потерять медиа.
+                if not still_id:
+                    return False
+                ok = await sender.send_live_photo_message(
+                    video_id, still_id, caption, rec, reply_to_message_id=reply_to_message_id
+                )
+                if ok:
+                    return True
+                pyro_log.warning("sendLivePhoto failed for msg %s; sending the still photo", msg.id)
+                return await sender.send_photo_message(
+                    still_id, caption, rec, reply_to_message_id=reply_to_message_id
+                )
+
             media_dispatch = {
                 "photo": sender.send_photo_message,
+                "live_photo": send_live_photo,
                 "video": sender.send_video_message,
                 "doc": sender.send_document_message,
                 "animation": sender.send_animation_message,
@@ -355,16 +415,16 @@ def register_handlers(
                 )
                 if len(translated) < 1024:
                     await run_with_retries(
-                        sender.send_media_group, album, translated, recorder
+                        sender.send_media_group, album, translated, recorder, reply_head
                     )
                 else:
                     # Same split as a long single-media caption: lead as the
                     # album caption, remainder as a reply to the album.
                     caption, remainder = split_caption_html(translated)
                     album_ok = await run_with_retries(
-                        sender.send_media_group, album, caption, recorder
+                        sender.send_media_group, album, caption, recorder, reply_head
                     )
-                    reply_to = recorder.get("dest_message_id") if album_ok else None
+                    reply_to = recorder.get("dest_message_id") if album_ok else reply_head
                     follow_up = remainder if album_ok else translated
                     if follow_up:
                         await run_with_retries(
@@ -380,9 +440,9 @@ def register_handlers(
                         media_type,
                     )
                     note_ok = await run_with_retries(
-                        send_media, file_id, "", recorder
+                        send_media, file_id, "", recorder, reply_head
                     )
-                    reply_to = recorder.get("dest_message_id") if note_ok else None
+                    reply_to = recorder.get("dest_message_id") if note_ok else reply_head
                     if translated:
                         await run_with_retries(
                             sender.send_message, translated, recorder, reply_to
@@ -392,7 +452,9 @@ def register_handlers(
                         "Detected %s message; re-sending media with translated caption.",
                         media_type,
                     )
-                    await run_with_retries(send_media, file_id, translated, recorder)
+                    await run_with_retries(
+                        send_media, file_id, translated, recorder, reply_head
+                    )
                 else:
                     # Caption exceeds Telegram's 1024-char media limit. Keep the
                     # image and text together: post the media with the lead of
@@ -408,19 +470,21 @@ def register_handlers(
                         len(remainder),
                     )
                     photo_ok = await run_with_retries(
-                        send_media, file_id, caption, recorder
+                        send_media, file_id, caption, recorder, reply_head
                     )
                     # If the photo posted, reply-link the rest to it; if it
                     # failed, fall back to sending the full text so nothing is
                     # lost (the lead was in the failed caption).
-                    reply_to = recorder.get("dest_message_id") if photo_ok else None
+                    reply_to = recorder.get("dest_message_id") if photo_ok else reply_head
                     follow_up = remainder if photo_ok else translated
                     if follow_up:
                         await run_with_retries(
                             sender.send_message, follow_up, recorder, reply_to
                         )
             else:
-                await run_with_retries(sender.send_message, translated, recorder)
+                await run_with_retries(
+                    sender.send_message, translated, recorder, reply_head
+                )
             pyro_log.info(
                 "DONE chat:%s msg:%s → destination msg: %s",
                 msg.chat.title,
@@ -473,17 +537,181 @@ def register_handlers(
         # Типы проверены выше, поэтому input_media_type здесь уже не вернёт None.
         album = [
             (input_media_type(media_type), file_id)
-            for file_id, _, media_type in infos
+            + ((live_photo_still_id(item),) if media_type == "live_photo" else ())
+            for item, (file_id, _, media_type) in zip(items, infos)
         ]
         # Подпись у альбома одна и висит на одной из частей — переводим её.
         lead = next((m for m in items if (m.text or m.caption)), items[0])
         await _relay_single(lead, album=album)
+
+    async def _relay_poll(msg):
+        """Перевести опрос (вопрос, варианты, описание, пояснение) и отправить sendPoll.
+
+        Поля опроса Telegram показывает как простой текст, поэтому каждое
+        переводится отдельно в «plain»-режиме, параллельно.
+        """
+        recorder = EventRecorder()
+        recorder.set(timestamp=datetime.now(timezone.utc).isoformat())
+        recorder.set(source_channel_id=msg.chat.id, source_channel_name=msg.chat.title)
+        recorder.set(event_type="create", media_type="poll", message_id=msg.id)
+        dest_id = CONFIG.get_destination_id(msg.chat.id)
+        recorder.set(dest_channel_id=dest_id, dest_channel_name=CONFIG.get_channel_name(dest_id))
+        fields = poll_source_fields(msg.poll)
+        totals = dict.fromkeys(
+            ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"), 0
+        )
+        models = []
+
+        async def tr(text):
+            if not (text or "").strip():
+                return ""
+            usage: dict = {}
+            out = await run_with_retries(translate_plain, anthropic, text, usage)
+            for key in totals:
+                totals[key] += usage.get(key, 0) or 0
+            if usage.get("model_used"):
+                models.append(usage["model_used"])
+            return out
+
+        try:
+            started = time.monotonic()
+            question, description, explanation, *options = await asyncio.gather(
+                tr(fields["question"]),
+                tr(fields["description"]),
+                tr(fields["explanation"]),
+                *(tr(o) for o in fields["options"]),
+            )
+            translated = {
+                "question": question,
+                "options": options,
+                "description": description,
+                "explanation": explanation,
+            }
+            source_text = "\n".join([fields["question"], *fields["options"]])
+            translated_text = "\n".join([question, *options])
+            recorder.set(
+                source_message=html.escape(source_text),
+                translated_message=html.escape(translated_text),
+                original_size=len(source_text),
+                translated_size=len(translated_text),
+                translation_time=time.monotonic() - started,
+                model_used=models[0] if models else "",
+                **totals,
+            )
+            body = build_poll_request(msg.poll, translated, time.time())
+            await run_with_retries(sender.send_poll, body, recorder, reply_target(msg))
+            pyro_log.info("POLL DONE chat:%s msg:%s → %s", msg.chat.title, msg.id, dest_id)
+        except Exception as exc:
+            reason = humanize_error(exc)
+            recorder.set(exception_message=reason)
+            pyro_log.error("FAILED POLL %s: %s", msg.id, exc, extra={"no_forward": True})
+            await send_alert(
+                f"⚠️ Poll relay failed\n"
+                f"Channel: {msg.chat.title}\n"
+                f"Post: {build_post_link(msg)}\n"
+                f"Reason: {reason}",
+                key=f"poll-fail:{msg.chat.id}:{reason[:40]}",
+            )
+        recorder.finalize()
+
+    async def _sync_poll_edit(msg):
+        """Опрос правкой не меняется; единственное, что синхронизируем, — закрытие."""
+        if not getattr(msg.poll, "is_closed", False):
+            return
+        try:
+            ids = CONFIG.get_destination_msg_ids(msg.chat.id, msg.id)
+        except Exception:
+            pyro_log.warning("poll close lookup failed for msg %s", msg.id, exc_info=True)
+            return
+        if ids:
+            await sender.stop_poll(CONFIG.get_destination_id(msg.chat.id), ids[0])
+
+    def _name(channel_id):
+        # get_channel_name бросает ValueError на неизвестный id (например, пару
+        # удалили через /removechannel между событием и обработкой).
+        try:
+            return CONFIG.get_channel_name(channel_id) or str(channel_id)
+        except ValueError:
+            return str(channel_id)
+
+    async def _sync_deletions(chat_id, source_ids):
+        """Удалить переводы удалённых в источнике постов (все их части)."""
+        dest_chat = CONFIG.get_destination_id(chat_id)
+        for source_id in source_ids:
+            try:
+                dest_ids = CONFIG.get_destination_msg_ids(chat_id, source_id)
+            except Exception:
+                pyro_log.warning("delete lookup failed for %s/%s", chat_id, source_id, exc_info=True)
+                continue
+            if not dest_ids:
+                # Часть альбома (не «ведущая»), или пост так и не релеился.
+                pyro_log.info("Deleted source msg %s/%s has no relayed copy.", chat_id, source_id)
+                continue
+            ok, err = await sender.delete_messages(dest_chat, dest_ids)
+            recorder = EventRecorder()
+            recorder.set(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="delete",
+                media_type="delete",
+                source_channel_id=chat_id,
+                source_channel_name=_name(chat_id),
+                dest_channel_id=dest_chat,
+                dest_channel_name=_name(dest_chat),
+                message_id=source_id,
+                posting_success=ok,
+                exception_message=err or "",
+            )
+            recorder.finalize()
+            if ok:
+                pyro_log.info("Deleted %s → %s %s", source_id, dest_chat, dest_ids)
+            else:
+                pyro_log.error(
+                    "Delete sync failed for %s/%s: %s", chat_id, source_id, err,
+                    extra={"no_forward": True},
+                )
+                await send_alert(
+                    f"🗑 Delete sync failed\n"
+                    f"Channel: {_name(chat_id)}\n"
+                    f"Messages: {', '.join(map(str, dest_ids))}\n"
+                    f"Reason: {err}",
+                    key=f"delete-fail:{chat_id}",
+                )
+
+    @pyro.on_deleted_messages()
+    async def handle_deleted_messages(_: Client, messages):
+        # Апдейт об удалении несёт только id и чат; фильтр по источникам — здесь,
+        # а не в filters, чтобы список каналов читался «вживую», как у source_filter.
+        if not sync_deletes_enabled():
+            return
+        sources = CONFIG.get_source_channel_ids()
+        by_chat: Dict[Any, List[int]] = {}
+        for m in messages or []:
+            chat_id = getattr(getattr(m, "chat", None), "id", None)
+            if chat_id in sources and getattr(m, "id", None):
+                by_chat.setdefault(chat_id, []).append(m.id)
+        for chat_id, ids in by_chat.items():
+            try:
+                await _sync_deletions(chat_id, ids)
+            except Exception as exc:
+                # Не даём исключению уйти в pyrogram (он залогирует ERROR и
+                # форвардер пришлёт сырой трейсбек) — шлём свою понятную абвестку.
+                pyro_log.error(
+                    "Delete sync crashed for %s %s: %s", chat_id, ids, exc,
+                    extra={"no_forward": True},
+                )
+                await send_alert(
+                    f"🗑 Delete sync failed\nChannel: {_name(chat_id)}\nReason: {humanize_error(exc)}",
+                    key=f"delete-fail:{chat_id}",
+                )
 
     media_groups = MediaGroupBuffer(relay_media_group)
 
     # The following handler matches ALL channel messages, which can cause duplicate handling
     @pyro.on_message(filters.channel & source_filter)
     async def handle_message(_: Client, msg):
+        if getattr(msg, "poll", None) is not None:
+            await _relay_poll(msg)
+            return
         # Альбом приходит как N отдельных апдейтов с общим media_group_id, и
         # подпись есть только у одного из них. Копим части и релеим один раз,
         # иначе альбом из 4 фото станет 4 постами с 4 переводами.
@@ -502,6 +730,9 @@ def register_handlers(
         pyro_log.info("=============================================")
         pyro_log.info("==== BEGIN HANDLING EDITED MESSAGE %s ====", msg.id)
         pyro_log.info("=============================================")
+        if getattr(msg, "poll", None) is not None:
+            await _sync_poll_edit(msg)
+            return
         # === 0. Prepare recorder and extract metadata ===
         # Fresh per-message recorder — see handle_message for why sharing is unsafe.
         recorder = EventRecorder()
@@ -541,6 +772,10 @@ def register_handlers(
             pyro_log.warning("!!! PTB worker failed for chat %s msg %s: %s", msg.chat.id, msg.id, e)
             meta = {}
             html_text = text
+
+        checklist = getattr(msg, "checklist", None)
+        if checklist is not None and not text:
+            html_text = checklist_to_html(checklist)
 
         # === 2. Build payload and log original message ===
         payload = build_payload(msg, html_text, meta)

@@ -9,6 +9,7 @@ import httpx
 from dotenv import load_dotenv
 from translator.config import CHANNEL_CONFIGS, BOT_TOKEN
 from translator.services.event_logger import EventRecorder
+from translator.utils import custom_emoji
 
 
 load_dotenv()
@@ -98,6 +99,20 @@ def build_send_options(*, with_caption: bool = False) -> dict:
     if with_caption and _env_flag("SHOW_CAPTION_ABOVE_MEDIA", False):
         options["show_caption_above_media"] = True
     return options
+
+
+def record_sent(recorder: EventRecorder, *message_ids: Any) -> None:
+    """Append destination message ids to ``dest_message_ids`` (send order).
+
+    Every message a post produces is kept — text chunks, a caption's remainder
+    reply, each album item — because a deletion of the source post must remove
+    all of them, and a reply to it must point at the first.
+    """
+    new = [str(i) for i in message_ids if i not in (None, "", 0)]
+    if not new:
+        return
+    existing = recorder.get("dest_message_ids") or ""
+    recorder.set(dest_message_ids=",".join([p for p in existing.split(",") if p] + new))
 
 
 # Shared regexes (compiled once instead of re-importing/re-compiling per call).
@@ -278,23 +293,9 @@ class TelegramSender:
             # Note: Message storage functionality would go here
             # Currently disabled to avoid recursion issue
 
-    async def _post_telegram(
+    async def _post_once(
         self, url: str, *, data: Optional[dict] = None, json: Optional[dict] = None
     ) -> Tuple[bool, Optional[httpx.Response], Optional[str]]:
-        """
-        Send a POST request to the Telegram Bot API (non-blocking via httpx).
-
-        A fresh AsyncClient is created per call on purpose: this sender is used
-        both by the bot's persistent event loop and by Flask routes that spin up
-        a new loop per request (asyncio.run), and a shared client would bind to
-        one loop and fail in the other.
-
-        Returns:
-            (success, response, error_message)
-            - success: True if status_code is 200, else False
-            - response: httpx.Response object if available, else None
-            - error_message: error description or exception string if failed, else None
-        """
         try:
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
                 r = await client.post(url, data=data, json=json)
@@ -308,6 +309,51 @@ class TelegramSender:
             return True, r, None
         except Exception as e:
             return False, None, str(e)
+
+    async def _post_telegram(
+        self, url: str, *, data: Optional[dict] = None, json: Optional[dict] = None
+    ) -> Tuple[bool, Optional[httpx.Response], Optional[str]]:
+        """
+        Send a POST request to the Telegram Bot API (non-blocking via httpx).
+
+        A fresh AsyncClient is created per call on purpose: this sender is used
+        both by the bot's persistent event loop and by Flask routes that spin up
+        a new loop per request (asyncio.run), and a shared client would bind to
+        one loop and fail in the other.
+
+        A request Telegram rejects (400) while it carries custom emoji is sent
+        once more with them flattened to plain emoji — a bot may use custom
+        emoji in a channel only with a Fragment username, and losing the whole
+        post over its emoji would be worse. If that retry succeeds the refusal
+        is remembered (see :mod:`translator.utils.custom_emoji`), so the next
+        posts are flattened up front.
+
+        Returns:
+            (success, response, error_message)
+            - success: True if status_code is 200, else False
+            - response: httpx.Response object if available, else None
+            - error_message: error description or exception string if failed, else None
+        """
+        ok, r, err = await self._post_once(url, data=data, json=json)
+        if ok or r is None or r.status_code != 400:
+            return ok, r, err
+        if "not modified" in str(err).lower():
+            # An identical edit, not an emoji refusal: the flattened text would
+            # *differ*, so a retry would "succeed" by stripping good emoji.
+            return ok, r, err
+        flat_json = custom_emoji.flatten_body(json)
+        flat_data = custom_emoji.flatten_body(data)
+        if flat_json is None and flat_data is None:
+            return ok, r, err
+        logging.warning("Telegram refused a post with custom emoji (%s); retrying with plain emoji", err)
+        ok2, r2, err2 = await self._post_once(
+            url,
+            data=flat_data if flat_data is not None else data,
+            json=flat_json if flat_json is not None else json,
+        )
+        if ok2:
+            custom_emoji.mark_refused(err)
+        return ok2, r2, err2
 
     async def send_message(
         self,
@@ -386,6 +432,7 @@ class TelegramSender:
                 api_error_code=None,
                 exception_message=None,
             )
+            record_sent(recorder, sent_msg_id)
         logging.info(
             "Send message: Successfully sent %d chunk(s) to %s", len(chunks), target
         )
@@ -400,6 +447,8 @@ class TelegramSender:
         caption: str,
         recorder: EventRecorder,
         supports_caption: bool = True,
+        reply_to_message_id: Optional[int] = None,
+        extra: Optional[dict] = None,
     ):
         """Send a media message (photo/video/document/…) via the Bot API.
 
@@ -410,6 +459,9 @@ class TelegramSender:
         ``supports_caption=False`` is for ``sendVideoNote``, the one media endpoint
         that accepts no ``caption`` at all — sending one is an API error, so the
         caller posts the translated text as a follow-up reply instead.
+
+        ``extra`` carries endpoint-specific fields (``sendLivePhoto``'s static
+        ``photo``); ``reply_to_message_id`` links the post as a reply.
         """
         target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
         if not dest_channel_id:
@@ -435,6 +487,11 @@ class TelegramSender:
         has_caption = bool(sanitized_caption) and supports_caption
         if has_caption:
             data["caption"] = sanitized_caption
+        if extra:
+            data.update(extra)
+        reply_parameters = build_reply_parameters(reply_to_message_id)
+        if reply_parameters:
+            data["reply_parameters"] = _as_form_value(reply_parameters)
         # Form-encoded body -> booleans/objects must be JSON-encoded (see
         # _as_form_value); the JSON sendMessage path nests them directly instead.
         for key, value in build_send_options(with_caption=has_caption).items():
@@ -466,66 +523,93 @@ class TelegramSender:
             api_error_code=None,
             exception_message=None,
         )
+        record_sent(recorder, sent_msg_id)
         logging.info("Successfully sent %s to %s", media_field, target)
         return True
 
     async def send_photo_message(
-        self, photo: str, caption: str, recorder: EventRecorder
+        self, photo: str, caption: str, recorder: EventRecorder, reply_to_message_id=None
     ):
         return await self._send_media_message(
-            "sendPhoto", "photo", photo, caption, recorder
+            "sendPhoto", "photo", photo, caption, recorder,
+            reply_to_message_id=reply_to_message_id,
         )
 
     async def send_video_message(
-        self, video: str, caption: str, recorder: EventRecorder
+        self, video: str, caption: str, recorder: EventRecorder, reply_to_message_id=None
     ):
         return await self._send_media_message(
-            "sendVideo", "video", video, caption, recorder
+            "sendVideo", "video", video, caption, recorder,
+            reply_to_message_id=reply_to_message_id,
         )
 
     async def send_document_message(
-        self, document: str, caption: str, recorder: EventRecorder
+        self, document: str, caption: str, recorder: EventRecorder, reply_to_message_id=None
     ):
         return await self._send_media_message(
-            "sendDocument", "document", document, caption, recorder
+            "sendDocument", "document", document, caption, recorder,
+            reply_to_message_id=reply_to_message_id,
         )
 
     async def send_animation_message(
-        self, animation: str, caption: str, recorder: EventRecorder
+        self, animation: str, caption: str, recorder: EventRecorder, reply_to_message_id=None
     ):
         return await self._send_media_message(
-            "sendAnimation", "animation", animation, caption, recorder
+            "sendAnimation", "animation", animation, caption, recorder,
+            reply_to_message_id=reply_to_message_id,
         )
 
     async def send_audio_message(
-        self, audio: str, caption: str, recorder: EventRecorder
+        self, audio: str, caption: str, recorder: EventRecorder, reply_to_message_id=None
     ):
         return await self._send_media_message(
-            "sendAudio", "audio", audio, caption, recorder
+            "sendAudio", "audio", audio, caption, recorder,
+            reply_to_message_id=reply_to_message_id,
         )
 
     async def send_voice_message(
-        self, voice: str, caption: str, recorder: EventRecorder
+        self, voice: str, caption: str, recorder: EventRecorder, reply_to_message_id=None
     ):
         return await self._send_media_message(
-            "sendVoice", "voice", voice, caption, recorder
+            "sendVoice", "voice", voice, caption, recorder,
+            reply_to_message_id=reply_to_message_id,
         )
 
     async def send_video_note_message(
-        self, video_note: str, caption: str, recorder: EventRecorder
+        self, video_note: str, caption: str, recorder: EventRecorder, reply_to_message_id=None
     ):
         """Send a round video note. ``sendVideoNote`` accepts no caption at all,
         so the caption is dropped here and the handler posts it as a reply."""
         return await self._send_media_message(
             "sendVideoNote", "video_note", video_note, caption, recorder,
             supports_caption=False,
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    async def send_live_photo_message(
+        self,
+        video: str,
+        photo: str,
+        caption: str,
+        recorder: EventRecorder,
+        reply_to_message_id=None,
+    ):
+        """Send a live photo (Bot API 10.0): its short video plus the static photo.
+
+        Both go by file_id — ``sendLivePhoto`` accepts no URLs.
+        """
+        return await self._send_media_message(
+            "sendLivePhoto", "live_photo", video, caption, recorder,
+            reply_to_message_id=reply_to_message_id,
+            extra={"photo": photo},
         )
 
     async def send_media_group(
         self,
-        items: List[Tuple[str, str]],
+        items: List[Tuple[str, ...]],
         caption: str,
         recorder: EventRecorder,
+        reply_to_message_id: Optional[int] = None,
     ):
         """Relay an album in one ``sendMediaGroup`` call.
 
@@ -537,7 +621,10 @@ class TelegramSender:
 
         ``sendMediaGroup`` returns an *array* of messages. The first one's id is
         recorded as ``dest_message_id`` so the source→destination edit mapping in
-        ``CONFIG.get_destination_msg_id`` keeps working unchanged.
+        ``CONFIG.get_destination_msg_id`` keeps working unchanged; all of them go
+        to ``dest_message_ids`` for delete sync.
+
+        A live-photo item is ``("live_photo", video_file_id, photo_file_id)``.
         """
         target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
         if not dest_channel_id:
@@ -552,8 +639,11 @@ class TelegramSender:
         show_above = _env_flag("SHOW_CAPTION_ABOVE_MEDIA", False)
 
         media = []
-        for index, (input_type, file_id) in enumerate(items):
+        for index, item in enumerate(items):
+            input_type, file_id = item[0], item[1]
             entry = {"type": input_type, "media": file_id}
+            if input_type == "live_photo" and len(item) > 2:
+                entry["photo"] = item[2]
             if index == 0 and sanitized_caption:
                 entry["caption"] = sanitized_caption
                 entry["parse_mode"] = "HTML"
@@ -570,6 +660,9 @@ class TelegramSender:
         data = {"chat_id": dest_channel_id, "media": json.dumps(media)}
         for key, value in build_send_options().items():
             data[key] = _as_form_value(value)
+        reply_parameters = build_reply_parameters(reply_to_message_id)
+        if reply_parameters:
+            data["reply_parameters"] = _as_form_value(reply_parameters)
 
         success, r, err = await self._post_telegram(url, data=data)
         if not success or r is None:
@@ -602,10 +695,82 @@ class TelegramSender:
             api_error_code=None,
             exception_message=None,
         )
+        record_sent(recorder, *(m.get("message_id") for m in results))
         logging.info(
             "Successfully sent media group (%d item(s)) to %s", len(media), target
         )
         return True
+
+    async def send_poll(
+        self,
+        poll: dict,
+        recorder: EventRecorder,
+        reply_to_message_id: Optional[int] = None,
+    ):
+        """Send a poll (``sendPoll`` fields already built by the caller).
+
+        ``poll`` holds ``question``, ``options`` and whichever optional fields
+        apply (``type``, ``correct_option_ids``, ``explanation`` …). JSON body,
+        so nested objects go in as-is.
+        """
+        target, dest_channel_id = recorder.get("dest_channel_name", "dest_channel_id")
+        if not dest_channel_id:
+            raise ValueError(
+                f"empty destination chat_id for poll send (dest_channel_name={target!r})"
+            )
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPoll"
+        body = {"chat_id": dest_channel_id, **poll}
+        reply_parameters = build_reply_parameters(reply_to_message_id)
+        if reply_parameters:
+            body["reply_parameters"] = reply_parameters
+        body.update(build_send_options())
+        success, r, err = await self._post_telegram(url, json=body)
+        if not success or r is None:
+            logging.error(
+                "Failed to send poll to %s: %s", dest_channel_id, err,
+                extra={"no_forward": True},
+            )
+            recorder.set(
+                posting_success=False,
+                api_error_code=r.status_code if r is not None else None,
+                exception_message=err,
+            )
+            return False
+        sent_msg_id = (r.json().get("result") or {}).get("message_id")
+        recorder.set(
+            dest_message_id=sent_msg_id,
+            posting_success=True,
+            api_error_code=None,
+            exception_message=None,
+        )
+        record_sent(recorder, sent_msg_id)
+        return True
+
+    async def stop_poll(self, chat_id, message_id) -> bool:
+        """Close a relayed poll (``stopPoll``); True on success."""
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/stopPoll"
+        ok, _r, err = await self._post_telegram(
+            url, json={"chat_id": chat_id, "message_id": int(message_id)}
+        )
+        if not ok:
+            logging.warning("stopPoll failed for %s/%s: %s", chat_id, message_id, err)
+        return ok
+
+    async def delete_messages(self, chat_id, message_ids: List[int]) -> Tuple[bool, Optional[str]]:
+        """Delete destination messages (``deleteMessages``, up to 100 per call).
+
+        Returns ``(ok, error)``. Telegram skips ids it can't find, so deleting a
+        post that is already gone is not an error.
+        """
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessages"
+        ids = [int(i) for i in message_ids]
+        for start in range(0, len(ids), 100):
+            ok, _r, err = await self._post_telegram(
+                url, json={"chat_id": chat_id, "message_ids": ids[start : start + 100]}
+            )
+            if not ok:
+                return False, err
+        return True, None
 
     async def edit_message(self, channel_id, message_id, text, recorder: EventRecorder, original_text: Optional[str] = None):
         """

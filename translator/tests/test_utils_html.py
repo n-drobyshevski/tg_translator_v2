@@ -107,10 +107,20 @@ def test_entities_to_html_expandable_blockquote():
     assert result == "<blockquote expandable>Test</blockquote>"
 
 
-def test_entities_to_html_custom_emoji_dropped_to_text():
+def test_entities_to_html_custom_emoji_dropped_to_text(monkeypatch):
+    monkeypatch.setenv("PRESERVE_CUSTOM_EMOJI", "0")
     ents = [ent(0, 2, MessageEntityType.CUSTOM_EMOJI, custom_emoji_id="555")]
     # Custom emoji wrapper is stripped; inner text is kept.
     assert entities_to_html("Hi", ents) == "Hi"
+
+
+def test_entities_to_html_keeps_custom_emoji_in_auto_mode(monkeypatch):
+    from translator.utils import custom_emoji
+
+    monkeypatch.delenv("PRESERVE_CUSTOM_EMOJI", raising=False)
+    custom_emoji.reset()
+    ents = [ent(0, 2, MessageEntityType.CUSTOM_EMOJI, custom_emoji_id="555")]
+    assert entities_to_html("Hi", ents) == '<tg-emoji emoji-id="555">Hi</tg-emoji>'
 
 
 def test_entities_to_html_escapes_leading_and_trailing_text():
@@ -126,12 +136,27 @@ def test_entities_to_html_escapes_plain_text_without_entities():
     assert entities_to_html("a < b & c", None) == "a &lt; b &amp; c"
 
 
-def test_custom_emoji_flattened_by_default(monkeypatch):
+def test_custom_emoji_kept_by_default_until_telegram_refuses(monkeypatch):
+    from translator.utils import custom_emoji
     from translator.utils.utils_html import _to_bot_api_html
 
     monkeypatch.delenv("PRESERVE_CUSTOM_EMOJI", raising=False)
-    # Safe default: a mirrored post's emoji come from the SOURCE channel, and
-    # Telegram rejects the whole message if the bot may not use one.
+    custom_emoji.reset()
+    raw = '<tg-emoji emoji-id="5368">👍</tg-emoji>'
+    # Auto mode keeps them: with a Fragment username the bot may use them.
+    assert _to_bot_api_html(raw) == raw
+    # Once Telegram refused them, posts are flattened up front for a while.
+    custom_emoji.mark_refused("test")
+    try:
+        assert _to_bot_api_html(raw) == "👍"
+    finally:
+        custom_emoji.reset()
+
+
+def test_custom_emoji_flattened_when_switched_off(monkeypatch):
+    from translator.utils.utils_html import _to_bot_api_html
+
+    monkeypatch.setenv("PRESERVE_CUSTOM_EMOJI", "0")
     assert _to_bot_api_html('<tg-emoji emoji-id="5368">👍</tg-emoji>') == "👍"
 
 

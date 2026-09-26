@@ -181,14 +181,43 @@ Per-message pipeline in `register_handlers` (`translator/bot.py`):
    Flask app), not via PTB.
 6. Record the outcome with `services/event_logger.EventRecorder`.
 
-`get_media_info` recognizes `animation, voice, video_note, audio, doc, photo,
-video` — **in that order, which matters**: Pyrogram sets `.document` (and
-sometimes `.video`) alongside `.animation` for GIFs, and first-present wins.
+`get_media_info` recognizes `live_photo, animation, voice, video_note, audio, doc,
+photo, video` — **in that order, which matters**: a live photo (Bot API 10.0)
+arrives with `.photo` set to its still frame too, so probing `photo` first would
+silently drop the motion; and Pyrogram sets `.document` (and sometimes `.video`)
+alongside `.animation` for GIFs, and first-present wins. A live photo goes out via
+`sendLivePhoto` with **two file_ids** (the video, and the still from
+`live_photo_still_id`; the endpoint takes no URLs), falling back to `sendPhoto`
+with the still; in albums it is `("live_photo", video_id, still_id)` →
+`InputMediaLivePhoto`.
 `sendVideoNote` is the one endpoint that takes **no caption at all**, so a video
 note is relayed bare and the translation follows as a reply
 (`bot.CAPTIONLESS_MEDIA`); everything else in `bot.CAPTIONED_MEDIA` carries its
 caption, which is also what the edit handler keys on to choose
 `editMessageCaption` vs `editMessageText`.
+
+**Beyond plain posts** (all in `register_handlers`):
+
+- **Replies.** If a source post replies to an earlier one, `reply_target` maps it
+  to the *head* of that post's translation and every send path passes it as
+  `reply_parameters` (with `allow_sending_without_reply`).
+- **Deletions** (`on_deleted_messages`, `SYNC_DELETES`, default on, read live):
+  deleting a source post deletes **every** message its translation produced via
+  `deleteMessages`, and records a `delete` event. That needs all the ids, so each
+  sender appends to `MessageEvent.dest_message_ids` (`record_sent`: text chunks,
+  a caption's remainder reply, each album item); `CONFIG.get_destination_msg_ids`
+  reads it, head first, falling back to the single legacy `dest_message_id`.
+  Deleting a non-lead album part deletes nothing (only the lead is mapped).
+- **Polls** are translated field by field in plain-text mode
+  (`translate_plain`: `PLAIN_SYSTEM` instead of the post template, which would
+  bold and `<p>`-wrap a poll option) and re-created with `sendPoll`
+  (`build_poll_request`: always anonymous in a channel, limits enforced, a quiz
+  whose answer the bot can't see goes out as a regular poll). Polls can't be
+  edited, so the edit handler only mirrors **closing** one (`stopPoll`).
+- **Checklists** can't be sent to a channel by a bot at all (`sendChecklist`
+  needs a business connection), so `checklist_to_html` turns one into a ✅/⬜️
+  text post that goes through the normal pipeline — edits (ticking a task)
+  included.
 
 **Albums** (`services/media_group_buffer.py`): Telegram delivers a media group as
 N independent updates sharing a `media_group_id`, with no "group complete"
@@ -411,7 +440,10 @@ rewrite-on-every-event was unsafe across the two processes (bot + Flask). WAL +
   `MessageEvent`.
 - **Read** by `aggregator.py` (`load_messages` + `build_*`) for dashboard charts,
   and by `config.get_destination_msg_id` for edit source→dest mapping (a single
-  indexed seek via `idx_events_src_msg`, not a full scan).
+  indexed seek via `idx_events_src_msg`, not a full scan). Schema v3 added
+  `dest_message_ids` (all destination ids of a post, comma-separated) for reply
+  mapping and delete sync — `get_destination_msg_ids`; like every added column
+  it is back-filled on old DBs by `connection._ADDED_COLUMNS`.
 
 `STORAGE_BACKEND` env (`sqlite` default | `json`) flips back to the legacy
 events.json path for rollback; the three call sites branch on it. Run
@@ -579,7 +611,15 @@ bypass the full template. The response is post-processed to strip stray
   `parser_utils.add_surrogates`), so it is the canary for a kurigram bump. Its
   filters are `isinstance`-based since 2.2.26, which is why message stand-ins in
   `test_admin_auth.py` must be real `Message` instances, not `SimpleNamespace`.
-- `PRESERVE_CUSTOM_EMOJI` (default off) gates `<tg-emoji>` in both sanitizers.
-  Off is the safe default: Bot API 9.4 lets bots send custom emoji, but only ones
-  the bot may use, and a mirrored post's emoji come from the *source* channel —
-  Telegram rejects the whole message if one isn't usable.
+- **Custom emoji** (`utils/custom_emoji.py`, `PRESERVE_CUSTOM_EMOJI`, default
+  **`auto`**). A bot may put custom emoji into a **channel** post only if it owns
+  an extra username bought on Fragment — the Bot API 9.4 allowance for a
+  Premium owner covers private chats and groups, *not* channels. In `auto` the
+  `<tg-emoji>` tags are kept (the prompt tells the model to copy them verbatim);
+  if Telegram answers 400 to a request carrying them, `TelegramSender._post_telegram`
+  re-sends it once flattened to the plain fallback emoji and, on success,
+  remembers the refusal for 24h so later posts are flattened up front (one
+  refused call a day, never a lost post). `1` always keeps them (still with the
+  retry), `0` always flattens (the old behaviour). The Flask sanitizer
+  (`app/admin_manager._preserve_custom_emoji`) flattens only when the variable is
+  unset.

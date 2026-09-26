@@ -81,6 +81,11 @@ def test_register_handlers_runs(monkeypatch):
                 return fn
             return deco
 
+        def on_deleted_messages(self, filt=None):
+            def deco(fn):
+                return fn
+            return deco
+
     class DummyAnthropic(Anthropic):
         def __init__(self):
             # Skip parent init
