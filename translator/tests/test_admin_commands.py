@@ -1,6 +1,7 @@
 """Tests for the admin DM command dispatcher (handle_command)."""
 
 import re
+from datetime import datetime, timedelta, timezone
 import types
 
 import pytest
@@ -657,7 +658,7 @@ async def test_richcheck_outside_the_dm_dispatcher_is_not_unknown(admin_env):
 
 def test_every_model_preset_has_a_price_row():
     for _label, value in admin_menu.MODEL_PRESETS:
-        assert value in admin_menu.MODEL_PRICING, value
+        assert value in admin_menu.MODEL_NOTES, value
 
 
 async def test_belarusian_screens_render(admin_env):
@@ -672,3 +673,125 @@ async def test_belarusian_screens_render(admin_env):
         # t() returns the raw key on a miss; none may reach the operator.
         leaked = [k for k in keys if k in out or k in out.rich]
         assert not leaked, f"{command}: {leaked}"
+
+
+# --- /cost: spend estimate from the recorded token usage ----------------------
+
+_COST_EVENTS = [
+    # Sonnet 5: 1M in + 100k out = $2 + $1 = $3.00
+    {"source_channel_name": "cv", "model_used": "claude-sonnet-5",
+     "input_tokens": 1_000_000, "output_tokens": 100_000,
+     "cache_read_tokens": 0, "cache_creation_tokens": 0},
+    # Dated Haiku snapshot: 1M cache reads at $0.10 = $0.10
+    {"source_channel_name": "snk", "model_used": "claude-haiku-4-5-20251001",
+     "input_tokens": 0, "output_tokens": 0,
+     "cache_read_tokens": 1_000_000, "cache_creation_tokens": 0},
+    # Unknown model: tokens count, cost doesn't.
+    {"source_channel_name": "cv", "model_used": "claude-future-9",
+     "input_tokens": 500, "output_tokens": 50,
+     "cache_read_tokens": 0, "cache_creation_tokens": 0},
+    # No usage (pre-v2 row, or a send without a translation): untracked.
+    {"source_channel_name": "cv", "model_used": "",
+     "input_tokens": 0, "output_tokens": 0,
+     "cache_read_tokens": 0, "cache_creation_tokens": 0},
+]
+
+
+def test_usage_summary_math():
+    s = admin_commands._usage_summary(_COST_EVENTS)
+    assert s["translations"] == 3 and s["untracked"] == 1 and s["unpriced"] == 1
+    assert s["cost"] == pytest.approx(3.10)
+    assert s["cost_per"] == pytest.approx(3.10 / 2)  # over priced translations only
+    assert s["by_model"]["claude-future-9"]["priced"] is False
+    assert s["by_channel"]["cv"]["posts"] == 2
+    # cache hit = reads / (uncached in + reads + writes)
+    assert s["cache_hit"] == pytest.approx(1_000_000 / (1_000_500 + 1_000_000))
+
+
+def test_usage_summary_of_nothing():
+    s = admin_commands._usage_summary([{"posting_success": True}])
+    assert s["translations"] == 0 and s["untracked"] == 1
+    assert s["cache_hit"] is None and s["cost_per"] is None
+
+
+def test_money_keeps_fractions_of_a_cent_visible():
+    assert admin_commands._money(3.1) == "$3.10"
+    assert admin_commands._money(1234.5) == "$1,234.50"
+    assert admin_commands._money(0.2003) == "$0.20"
+    assert admin_commands._money(0.0157) == "$0.016"
+    assert admin_commands._money(0.0042) == "$0.0042"
+    assert admin_commands._money(0.000001) == "<$0.0001"
+    assert admin_commands._money(0) == "$0.00"
+    assert admin_commands._money(None) == "—"
+
+
+def test_snapshot_and_alias_are_one_model_in_the_report():
+    events = [
+        {"model_used": "claude-sonnet-5", "input_tokens": 1},
+        {"model_used": "claude-sonnet-5-20260101", "input_tokens": 1},
+    ]
+    s = admin_commands._usage_summary(events)
+    assert list(s["by_model"]) == ["claude-sonnet-5"]
+    assert s["by_model"]["claude-sonnet-5"]["posts"] == 2
+
+
+@pytest.fixture
+def cost_events(monkeypatch):
+    from translator.db import events_dao
+
+    seen = {}
+
+    def fake_load(since_iso=None, event_type=None):
+        seen["since"] = since_iso
+        return _COST_EVENTS
+
+    monkeypatch.setattr(events_dao, "load_messages", fake_load)
+    return seen
+
+
+async def test_cost_report_renders_both_ways(admin_env, cost_events):
+    out = await admin_commands.handle_command(Msg("/cost 30"))
+    assert isinstance(out, rich_html.RichText) and out.rich
+    assert "$3.10" in out and "$3.10" in out.rich
+    assert "Translations: 3" in out
+    assert "claude-future-9" in out.rich and "no known price" in out
+    assert "<table" in out.rich
+    since = datetime.fromisoformat(cost_events["since"])
+    assert timedelta(days=29) < datetime.now(timezone.utc) - since < timedelta(days=31)
+
+
+@pytest.mark.parametrize("arg", ["0", "91", "x"])
+async def test_cost_rejects_bad_windows(admin_env, cost_events, arg):
+    out = await admin_commands.handle_command(Msg(f"/cost {arg}"))
+    assert out.startswith("❌")
+
+
+async def test_stats_shows_the_cost_estimate(admin_env, cost_events):
+    out = await admin_commands.handle_command(Msg("/stats"))
+    assert "Est. cost: $3.10 · /cost" in out
+
+
+def test_cost_menu_periods_and_navigation(admin_env, cost_events):
+    title, rows = admin_menu.build_menu("cost")
+    data = [cd for row in rows for _, cd in row]
+    assert "x:cost:7" in data and "cost:30" in data and "nav:ai" in data
+    res = admin_menu.handle_callback("cost:30")
+    data = [cd for row in res.rows for _, cd in row]
+    assert "x:cost:30" in data and "cost:7" in data
+    assert "nav:cost" in [cd for row in admin_menu.build_menu("ai")[1] for _, cd in row]
+
+
+@pytest.mark.parametrize("data", ["cost:999", "cost:x", "cost:"])
+def test_cost_callback_only_accepts_offered_periods(admin_env, cost_events, data):
+    res = admin_menu.handle_callback(data)
+    assert res.alert == "Expired"
+
+
+def test_model_menu_prices_come_from_the_shared_table(admin_env):
+    from translator.utils.model_pricing import price_for
+
+    title, _rows = admin_menu.build_menu("model")
+    for label, value in admin_menu.MODEL_PRESETS:
+        price = price_for(value)
+        assert price is not None, value
+        assert f"{label} — ${price.input:g} / ${price.output:g}" in title

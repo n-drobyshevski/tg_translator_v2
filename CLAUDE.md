@@ -211,8 +211,8 @@ paths are form-encoded and must go through `_as_form_value` (booleans become
 lowercase JSON literals, objects become JSON strings).
 
 **Edits** are handled separately: the edit handler looks up the previously-sent
-destination message ID via `CONFIG.get_destination_msg_id(...)` (which scans
-`events.json` newest-first) and calls `TelegramSender.edit_message`. That method
+destination message ID via `CONFIG.get_destination_msg_id(...)` (one indexed
+SQLite seek — see the event-store section) and calls `TelegramSender.edit_message`. That method
 does aggressive content-equality normalization (`sanitize_html`,
 `telegram_normalize_text`, `advanced_content_comparison`) to avoid Telegram's
 "message is not modified" error.
@@ -450,6 +450,28 @@ and all four are settable live from the admin DM (`/setmodel`, `/setmaxtokens`,
 `/settemp`, `/seteffort`, or the 🤖 AI Settings menu).
 The previous default, `claude-haiku-4-5`, is still served but carries a published
 retirement floor of 2026-10-15.
+
+### What it costs: `/cost`
+
+Every relayed translation records its usage (`input_tokens`, `output_tokens`,
+`cache_read_tokens`, `cache_creation_tokens`, `model_used`) in the event store.
+The admin DM turns that into a spend estimate: `/cost [days]` (1–90, or AI
+Settings → 💲 Cost with 7/30/90-day buttons), plus an `Est. cost` row in `/stats`.
+Prices live in **`utils/model_pricing.py` — the one place to edit when list prices
+change** (`PRICES_AS_OF` is shown in the report footer); the Model menu's price
+table reads the same table. Three things it gets right on purpose:
+
+- `usage.input_tokens` is the *uncached* input, so cost = input·p_in + cache
+  writes·1.25·p_in (the 5-minute TTL `translate_html` uses) + cache reads·p_read +
+  output·p_out — and **cache reads are priced per model** (0.025× on Fable 5.1,
+  0.05× on Opus 5.5, 0.1× elsewhere), not as a flat tenth.
+- `price_for` matches an id exactly or as a dated snapshot (`…-YYYYMMDD`), never
+  by bare prefix: `claude-opus-5` is a prefix of the cheaper `claude-opus-5-5`, and
+  a future `claude-sonnet-5-1` must read as *unpriced*, not as Sonnet 5.
+  Unpriced translations still count their tokens and are flagged in the report.
+- It covers relayed posts only: the Flask app's manual translations
+  (`app/admin_manager.py`, `app/admin_prompt.py`) pass no `usage_out`, and a
+  failed attempt inside `run_with_retries` isn't recorded — so it is a floor.
 
 ### The request shape follows the model
 

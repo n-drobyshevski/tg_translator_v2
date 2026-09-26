@@ -64,6 +64,7 @@ from translator.services.rich_html import (
 )
 from translator.utils.error_format import humanize_text
 from translator.utils.model_capabilities import supports_effort, supports_sampling_params
+from translator.utils.model_pricing import PRICES_AS_OF, canonical_id, estimate_cost
 from translator.utils.prompt_validation import validate_prompt
 from translator.utils.translation_utils import reload_prompt_template
 
@@ -181,7 +182,7 @@ def _fmt_uptime(start_ts: Optional[float], lang: str = "en") -> str:
 # be published without also being documented.
 COMMAND_GROUPS = (
     ("grp_monitoring", ("status", "stats", "logs")),
-    ("grp_ai", ("setmodel", "seteffort", "setmaxtokens", "settemp", "prompt", "setprompt")),
+    ("grp_ai", ("setmodel", "seteffort", "setmaxtokens", "settemp", "prompt", "setprompt", "cost")),
     ("grp_channels", ("channels", "addchannel", "editchannel", "removechannel")),
     ("grp_admins", ("admins", "addadmin", "removeadmin")),
     (
@@ -328,6 +329,7 @@ def _cmd_stats(args: List[str], lang: str = "en") -> RichText:
         [esc(name), str(count), str(failed_by[name]), _pct(count, total)]
         for name, count in by_channel.most_common()
     ]
+    usage = _usage_summary(messages)
     return Doc(
         Heading(t("h_stats", lang, days=days)),
         KV(
@@ -335,6 +337,7 @@ def _cmd_stats(args: List[str], lang: str = "en") -> RichText:
                 (t("lbl_relayed", lang), total),
                 (t("lbl_failures", lang), failures),
                 (t("lbl_success_rate", lang), _pct(total - failures, total)),
+                (t("lbl_est_cost", lang), f"{_money(usage['cost'])} · /cost"),
             ]
         ),
         Heading(t("h_by_channel", lang), 4),
@@ -346,6 +349,179 @@ def _cmd_stats(args: List[str], lang: str = "en") -> RichText:
         ),
         Footer(t("hint_stats", lang)),
     ).render()
+
+
+# --- /cost -------------------------------------------------------------------
+
+_COST_MAX_DAYS = 90
+_TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+
+
+def _int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_summary(events) -> dict:
+    """Token and cost totals over event dicts (as ``events_dao.load_messages``).
+
+    Only rows that carry token usage are translations; the rest (sends without a
+    translation, and rows written before the token columns existed) are counted
+    as ``untracked``. Cost is summed over rows whose model has a list price;
+    the others still count their tokens and are reported as ``unpriced``.
+    """
+    totals = dict.fromkeys(_TOKEN_FIELDS, 0)
+    by_model: dict = {}
+    by_channel: dict = {}
+    summary = {
+        "translations": 0,
+        "untracked": 0,
+        "unpriced": 0,
+        "cost": 0.0,
+        "tokens": totals,
+        "by_model": by_model,
+        "by_channel": by_channel,
+    }
+    for event in events:
+        tokens = {f: _int(event.get(f)) for f in _TOKEN_FIELDS}
+        if not any(tokens.values()):
+            summary["untracked"] += 1
+            continue
+        model = canonical_id(event.get("model_used")) or "?"
+        cost = estimate_cost(
+            model,
+            input_tokens=tokens["input_tokens"],
+            output_tokens=tokens["output_tokens"],
+            cache_read_tokens=tokens["cache_read_tokens"],
+            cache_write_tokens=tokens["cache_creation_tokens"],
+        )
+        summary["translations"] += 1
+        for f in _TOKEN_FIELDS:
+            totals[f] += tokens[f]
+        if cost is None:
+            summary["unpriced"] += 1
+        else:
+            summary["cost"] += cost
+
+        m = by_model.setdefault(
+            model,
+            {"posts": 0, "cost": 0.0, "priced": cost is not None, **dict.fromkeys(_TOKEN_FIELDS, 0)},
+        )
+        m["posts"] += 1
+        m["cost"] += cost or 0.0
+        for f in _TOKEN_FIELDS:
+            m[f] += tokens[f]
+
+        channel = str(event.get("source_channel_name") or "?")
+        c = by_channel.setdefault(channel, {"posts": 0, "cost": 0.0})
+        c["posts"] += 1
+        c["cost"] += cost or 0.0
+
+    prompt = _prompt_tokens(totals)
+    summary["cache_hit"] = totals["cache_read_tokens"] / prompt if prompt else None
+    n = summary["translations"]
+    priced = n - summary["unpriced"]
+    summary["cost_per"] = summary["cost"] / priced if priced else None
+    return summary
+
+
+def _prompt_tokens(counts: dict) -> int:
+    """All prompt-side tokens: uncached input plus cache reads and writes."""
+    return counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_creation_tokens"]
+
+
+def _money(value: Optional[float]) -> str:
+    """USD for a report: cents from $0.10 up, two significant figures below.
+
+    A single translation costs a fraction of a cent, which "$0.00" would hide.
+    """
+    if value is None:
+        return "—"
+    if value == 0 or value >= 0.1:
+        return f"${value:,.2f}"
+    if value < 0.0001:
+        return "<$0.0001"
+    return "$" + f"{value:.2g}"
+
+
+def _tokens(value: int) -> str:
+    return f"{value:,}"
+
+
+def _cost_doc(days: int = 7, lang: str = "en") -> Doc:
+    try:
+        from translator.db import events_dao
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        events = events_dao.load_messages(since_iso=cutoff)
+    except Exception as exc:  # pragma: no cover - defensive
+        return Doc(Status(False, t("err_stats_unavailable", lang)), Para(esc(exc)))
+
+    usage = _usage_summary(events)
+    tokens = usage["tokens"]
+    hit = usage["cache_hit"]
+    model_rows = [
+        [
+            f"<code>{esc(model)}</code>",
+            str(m["posts"]),
+            _tokens(_prompt_tokens(m)),
+            _tokens(m["output_tokens"]),
+            _money(m["cost"]) if m["priced"] else "—",
+        ]
+        for model, m in sorted(usage["by_model"].items(), key=lambda kv: -kv[1]["posts"])
+    ]
+    channel_rows = [
+        [esc(name), str(c["posts"]), _money(c["cost"])]
+        for name, c in sorted(usage["by_channel"].items(), key=lambda kv: -kv[1]["cost"])
+    ]
+    return Doc(
+        Heading(t("h_cost_report", lang, days=days)),
+        KV(
+            [
+                (t("lbl_translations", lang), usage["translations"]),
+                (t("lbl_est_cost", lang), f"<b>{_money(usage['cost'])}</b>"),
+                (t("lbl_per_translation", lang), _money(usage["cost_per"])),
+                (t("lbl_cache_hit", lang), "—" if hit is None else f"{hit * 100:.0f}%"),
+                (
+                    t("lbl_tokens_in_out", lang),
+                    f"{_tokens(_prompt_tokens(tokens))} / {_tokens(tokens['output_tokens'])}",
+                ),
+            ]
+        ),
+        Note(t("txt_cost_unpriced", lang, count=usage["unpriced"]), icon="ℹ️")
+        if usage["unpriced"]
+        else None,
+        Heading(t("h_by_model", lang), 4),
+        Table(
+            [t("col_model", lang), t("col_posts", lang), t("col_in", lang),
+             t("col_out", lang), t("col_cost", lang)],
+            model_rows,
+            classic_row=lambda r: f"{r[0]}: {r[1]} · {r[4]}",
+            empty=t("common_none", lang),
+        ),
+        Heading(t("h_by_channel", lang), 4),
+        Table(
+            [t("col_channel", lang), t("col_posts", lang), t("col_cost", lang)],
+            channel_rows,
+            classic_row=lambda r: f"{r[0]}: {r[1]} · {r[2]}",
+            empty=t("common_none", lang),
+        ),
+        Footer(t("hint_cost", lang, as_of=PRICES_AS_OF)),
+    )
+
+
+def _cmd_cost(args: List[str], lang: str = "en") -> RichText:
+    days = 7
+    if args:
+        try:
+            days = int(args[0])
+        except ValueError:
+            return _usage("/cost [days]", lang)
+        if not 1 <= days <= _COST_MAX_DAYS:
+            return _err(t("err_cost_days", lang, max=_COST_MAX_DAYS))
+    return _cost_doc(days, lang).render()
 
 
 # --- Settings summary, channels, prompt, logs --------------------------------
@@ -952,6 +1128,8 @@ async def handle_command(
         return _cmd_status(start_ts, query_queue, pyro, lang)
     if cmd == "/stats":
         return _cmd_stats(args, lang)
+    if cmd == "/cost":
+        return _cmd_cost(args, lang)
     if cmd == "/channels":
         return _cmd_channels(lang)
     if cmd == "/prompt":
@@ -1020,6 +1198,7 @@ COMMAND_SPECS = (
     ("setmaxtokens", "cmd_desc_setmaxtokens"),
     ("settemp", "cmd_desc_settemp"),
     ("setprompt", "cmd_desc_setprompt"),
+    ("cost", "cmd_desc_cost"),
     ("setloglevel", "cmd_desc_setloglevel"),
     ("setlang", "cmd_desc_setlang"),
     ("setrich", "cmd_desc_setrich"),

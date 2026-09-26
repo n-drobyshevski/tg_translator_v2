@@ -347,6 +347,27 @@ _EN: Dict[str, str] = {
         "To change it, send <code>/setprompt</code> followed by the new template on "
         "new lines, or reply to a message containing it."
     ),
+    # Cost report (/cost, AI Settings → 💲 Cost).
+    "settings_btn_cost": "💲 Cost",
+    "h_cost_report": "💲 Spend — last {days}d",
+    "h_by_model": "By model",
+    "lbl_translations": "Translations",
+    "lbl_est_cost": "Est. cost",
+    "lbl_per_translation": "Per translation",
+    "lbl_cache_hit": "Prompt cache hit rate",
+    "lbl_tokens_in_out": "Tokens in / out",
+    "col_in": "In",
+    "col_out": "Out",
+    "col_cost": "Cost",
+    "txt_cost_unpriced": (
+        "{count} translation(s) came from a model with no known price — their "
+        "tokens are counted, their cost is not."
+    ),
+    "hint_cost": (
+        "Estimate from list prices as of {as_of}, relayed posts only (translations "
+        "made in the web app aren't recorded). <code>/cost &lt;days&gt;</code> — up to 90."
+    ),
+    "err_cost_days": "days must be 1..{max}",
     # Rich messages switch.
     "txt_rich_on": "Admin messages are sent as rich messages, with a classic fallback.",
     "txt_rich_off": "Admin messages are sent as classic HTML.",
@@ -396,6 +417,7 @@ _EN: Dict[str, str] = {
     "cmd_desc_setrich": "Switch rich messages on or off",
     "cmd_desc_richcheck": "Test which rich features Telegram accepts",
     "cmd_desc_setprompt": "Replace the prompt template",
+    "cmd_desc_cost": "Estimated spend and token usage",
     "cmd_desc_addchannel": "Add a source/destination channel pair",
     "cmd_desc_editchannel": "Change an existing pair's channel ids",
     "cmd_desc_removechannel": "Stop relaying a channel pair",
@@ -726,6 +748,27 @@ _BE: Dict[str, str] = {
         "Каб змяніць, дашліце <code>/setprompt</code> з новым шаблонам на новых "
         "радках або адкажыце на паведамленне з ім."
     ),
+    # Cost report.
+    "settings_btn_cost": "💲 Кошт",
+    "h_cost_report": "💲 Выдаткі — апошнія {days}д",
+    "h_by_model": "Па мадэлях",
+    "lbl_translations": "Перакладаў",
+    "lbl_est_cost": "Ацэнка кошту",
+    "lbl_per_translation": "За пераклад",
+    "lbl_cache_hit": "Трапленні ў кэш промпта",
+    "lbl_tokens_in_out": "Токены ўвод / вывад",
+    "col_in": "Увод",
+    "col_out": "Вывад",
+    "col_cost": "Кошт",
+    "txt_cost_unpriced": (
+        "{count} пераклад(аў) зроблена мадэллю без вядомай цаны — іх токены "
+        "ўлічаны, а кошт не."
+    ),
+    "hint_cost": (
+        "Ацэнка па прайс-лісце на {as_of}, толькі рэтрансляваныя пасты (пераклады "
+        "з вэб-праграмы не запісваюцца). <code>/cost &lt;дні&gt;</code> — да 90."
+    ),
+    "err_cost_days": "дні мусяць быць 1..{max}",
     # Rich messages switch.
     "txt_rich_on": "Адмінскія паведамленні адпраўляюцца як багатыя, з класічным запасным варыянтам.",
     "txt_rich_off": "Адмінскія паведамленні адпраўляюцца як класічны HTML.",
@@ -772,6 +815,7 @@ _BE: Dict[str, str] = {
     "cmd_desc_setrich": "Уключыць або выключыць багатыя паведамленні",
     "cmd_desc_richcheck": "Праверыць, якія багатыя магчымасці прымае Telegram",
     "cmd_desc_setprompt": "Замяніць шаблон промпта",
+    "cmd_desc_cost": "Ацэнка выдаткаў і выкарыстання токенаў",
     "cmd_desc_addchannel": "Дадаць пару крыніца/прызначэнне",
     "cmd_desc_editchannel": "Змяніць id каналаў існуючай пары",
     "cmd_desc_removechannel": "Спыніць рэляй пары каналаў",

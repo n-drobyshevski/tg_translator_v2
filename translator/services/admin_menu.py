@@ -59,6 +59,7 @@ from translator.services.rich_html import (
     esc,
 )
 from translator.utils.model_capabilities import supports_effort, supports_sampling_params
+from translator.utils.model_pricing import price_for
 
 log = logging.getLogger("ADMIN.MENU")
 
@@ -306,14 +307,16 @@ TEMP_PRESETS = ["0", "0.3", "0.5", "0.7", "1.0"]
 # the old 1500/2000/4000/8192 ladder no longer brackets the default at all.
 TOKEN_PRESETS = ["4000", "8000", "16000", "32000"]
 EFFORT_PRESETS = ["low", "medium", "high"]
-# Published list prices per model (USD per 1M tokens: input, output) and the
-# one-line note shown in the Model menu. Every preset needs an entry — a test
-# asserts it, so a new preset can't ship with a blank price row.
-MODEL_PRICING = {
-    "claude-haiku-4-5": ("$1", "$5", "txt_model_note_haiku"),
-    "claude-sonnet-5": ("$2", "$10", "txt_model_note_sonnet"),
-    "claude-opus-5": ("$5", "$25", "txt_model_note_opus"),
+# The one-line note shown per preset in the Model menu. Prices come from
+# utils/model_pricing (the same table the /cost report bills with), and a test
+# asserts every preset has both, so a new preset can't ship a blank row.
+MODEL_NOTES = {
+    "claude-haiku-4-5": "txt_model_note_haiku",
+    "claude-sonnet-5": "txt_model_note_sonnet",
+    "claude-opus-5": "txt_model_note_opus",
 }
+# Periods offered by the 💲 Cost screen's buttons.
+COST_PERIODS = (7, 30, 90)
 
 
 def _back_to_settings(lang: str = "en") -> Row:
@@ -421,7 +424,10 @@ def _ai_menu(lang: str = "en") -> Tuple[str, Rows]:
             (t("settings_btn_tokens", lang), "nav:tokens"),
         ],
         [(t("settings_btn_effort", lang), "nav:effort")],
-        [(t("btn_prompt", lang), "nav:prompt")],
+        [
+            (t("btn_prompt", lang), "nav:prompt"),
+            (t("settings_btn_cost", lang), "nav:cost"),
+        ],
         # AI Settings is a top-level menu (peer of Settings), so it closes
         # rather than navigating "back" to a parent.
         [(t("settings_btn_close", lang), "nav:close")],
@@ -442,9 +448,16 @@ def _model_menu(lang: str = "en") -> Tuple[str, Rows]:
     model = str(CONFIG.ANTHROPIC_MODEL)
     table_rows = []
     for label, value in MODEL_PRESETS:
-        price_in, price_out, note_key = MODEL_PRICING[value]
+        price = price_for(value)
         marker = "● " if value == model else ""
-        table_rows.append([f"{marker}{esc(label)}", price_in, price_out, t(note_key, lang)])
+        table_rows.append(
+            [
+                f"{marker}{esc(label)}",
+                f"${price.input:g}" if price else "—",
+                f"${price.output:g}" if price else "—",
+                t(MODEL_NOTES[value], lang) if value in MODEL_NOTES else "",
+            ]
+        )
     title = Doc(
         Heading(t("h_model", lang)),
         KV([(t("lbl_current", lang), f"<code>{esc(model)}</code>")]),
@@ -651,6 +664,21 @@ def _admin_confirm(uid: str, lang: str = "en") -> Tuple[str, Rows]:
     return title, rows
 
 
+def _cost_menu(lang: str = "en", days: int = COST_PERIODS[0]) -> Tuple[str, Rows]:
+    """Spend estimate for the last ``days``, with period / refresh / back buttons."""
+    title = admin_commands._cost_doc(days, lang).render()
+    period_row: Row = [
+        (f"{d}d", (DISABLED_PREFIX if d == days else "") + f"cost:{d}")
+        for d in COST_PERIODS
+    ]
+    rows: Rows = [
+        period_row,
+        [(t("logs_btn_refresh", lang), f"cost:{days}")],
+        _back_to_ai(lang),
+    ]
+    return title, rows
+
+
 def add_admin_prompt(lang: str = "en"):
     """The message that opens the add-admin user picker."""
     return Doc(
@@ -686,6 +714,8 @@ def build_menu(menu_id: str, lang: str = "en") -> Tuple[str, Rows]:
         return _rmch_menu(lang)
     if menu_id == "admins":
         return _admins_menu(lang)
+    if menu_id == "cost":
+        return _cost_menu(lang)
     # Default / "settings".
     return _settings_menu(lang)
 
@@ -776,6 +806,14 @@ def handle_callback(
         # model/temp/tokens/effort live under AI Settings; log and rich in Settings.
         back = _back_to_settings(lang) if kind in ("log", "rich") else _back_to_ai(lang)
         return CallbackResult(text, [back], alert)
+
+    if head == "cost" and len(parts) >= 2:
+        # Only the offered periods: callback data is client-supplied, and an
+        # unbounded window would make one tap scan the whole event store.
+        if not parts[1].isdigit() or int(parts[1]) not in COST_PERIODS:
+            return _fallback(lang)
+        title, rows = _cost_menu(lang, int(parts[1]))
+        return CallbackResult(title, rows)
 
     if head == "rmch" and len(parts) >= 2:
         title, rows = _rmch_confirm(parts[1], lang)
