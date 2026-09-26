@@ -96,6 +96,38 @@ def get_destination_msg_id(source_channel_id, message_id) -> Optional[str]:
     return r["dest_message_id"] if r else None
 
 
+def parse_dest_ids(raw: Any) -> List[int]:
+    """``"12,13,14"`` → ``[12, 13, 14]``; junk entries are skipped."""
+    out: List[int] = []
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if part.lstrip("-").isdigit():
+            out.append(int(part))
+    return out
+
+
+def get_destination_msg_ids(source_channel_id, message_id) -> List[int]:
+    """Every destination message a source post produced, head first.
+
+    Reads the newest row that recorded ``dest_message_ids``; rows written before
+    that column existed fall back to their single ``dest_message_id``. Empty if
+    the post was never relayed.
+    """
+    if not message_id:
+        raise ValueError("message_id cannot be empty")
+    with get_conn() as conn:
+        r = conn.execute(
+            """SELECT dest_message_ids, dest_message_id FROM events
+               WHERE source_channel_id = ? AND message_id = ?
+                 AND (dest_message_ids <> '' OR dest_message_id <> '')
+               ORDER BY (dest_message_ids <> '') DESC, id DESC LIMIT 1""",
+            (str(source_channel_id), str(message_id)),
+        ).fetchone()
+    if r is None:
+        return []
+    return parse_dest_ids(r["dest_message_ids"]) or parse_dest_ids(r["dest_message_id"])
+
+
 def load_messages(
     since_iso: Optional[str] = None, event_type: Optional[str] = None
 ) -> List[Dict[str, Any]]:

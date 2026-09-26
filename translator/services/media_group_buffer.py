@@ -124,6 +124,7 @@ class MediaGroupBuffer:
 # видеосообщения в альбом не кладутся вообще.
 _INPUT_MEDIA_TYPES = {
     "photo": "photo",
+    "live_photo": "live_photo",  # Bot API 10.0: allowed in albums with photo/video
     "video": "video",
     "doc": "document",
     "audio": "audio",
@@ -133,6 +134,7 @@ _INPUT_MEDIA_TYPES = {
 # группируются лишь с себе подобными.
 _FAMILIES = {
     "photo": "visual",
+    "live_photo": "visual",
     "video": "visual",
     "document": "document",
     "audio": "audio",

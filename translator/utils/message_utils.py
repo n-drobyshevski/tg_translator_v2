@@ -70,12 +70,16 @@ def get_media_info(msg, max_size: int) -> Tuple[Optional[str], Optional[int], st
     file_id = None
     file_size_bytes = None
     media_type = "text"
-    # First present wins, so ORDER MATTERS. Pyrogram populates `.document` (and
-    # sometimes `.video`) alongside `.animation` for GIFs, and a GIF relayed via
-    # sendDocument loses its autoplay, so `animation` has to be probed first.
-    # Likewise `voice`/`video_note` are probed before the generic `audio`/`video`
-    # they resemble. Everything below `photo` is a plain single-attribute case.
+    # First present wins, so ORDER MATTERS. A live photo (Bot API 10.0) arrives
+    # with `.photo` set to its still image as well, so it must be probed before
+    # `photo` or its motion is silently dropped; its file_id is the video part
+    # (see live_photo_still_id for the still). Pyrogram populates `.document`
+    # (and sometimes `.video`) alongside `.animation` for GIFs, and a GIF
+    # relayed via sendDocument loses its autoplay, so `animation` has to be
+    # probed early too. Likewise `voice`/`video_note` are probed before the
+    # generic `audio`/`video` they resemble.
     for kind, attr in (
+        ("live_photo", "live_photo"),
         ("animation", "animation"),
         ("voice", "voice"),
         ("video_note", "video_note"),
@@ -104,6 +108,101 @@ def get_media_info(msg, max_size: int) -> Tuple[Optional[str], Optional[int], st
             )
         break
     return file_id, file_size_bytes, media_type
+
+def live_photo_still_id(msg) -> Optional[str]:
+    """File id of a live photo's static image (Pyrogram keeps it in ``.photo``)."""
+    photo = getattr(msg, "photo", None)
+    return getattr(photo, "file_id", None) if photo else None
+
+
+def _plain(value) -> str:
+    """Text of a Pyrogram ``FormattedText`` (or a plain str / None)."""
+    if value is None:
+        return ""
+    return str(getattr(value, "text", value) or "")
+
+
+def checklist_to_html(checklist) -> str:
+    """A checklist as a text post: bold title, one ✅ / ⬜️ line per task.
+
+    Bots can send real checklists only on behalf of a business account
+    (``sendChecklist`` requires ``business_connection_id``), never to a channel,
+    so the relay posts the checklist's content as translated text instead.
+    """
+    lines = []
+    title = _plain(getattr(checklist, "title", ""))
+    if title:
+        lines.append(f"<b>{escape(title)}</b>")
+    for task in getattr(checklist, "tasks", None) or []:
+        done = getattr(task, "completed_by", None) or getattr(task, "completion_date", None)
+        lines.append(f"{'✅' if done else '⬜️'} {escape(_plain(getattr(task, 'text', '')))}")
+    return "\n".join(lines)
+
+
+# sendPoll limits (Bot API 10.0).
+POLL_QUESTION_MAX = 300
+POLL_OPTION_MAX = 100
+POLL_EXPLANATION_MAX = 200
+POLL_DESCRIPTION_MAX = 1024
+
+
+def _fit(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def poll_source_fields(poll) -> Dict[str, Any]:
+    """The translatable text of a Pyrogram ``Poll``: question, options, extras."""
+    return {
+        "question": _plain(getattr(poll, "question", "")),
+        "options": [_plain(getattr(o, "text", o)) for o in (getattr(poll, "options", None) or [])],
+        "description": _plain(getattr(poll, "description", None)),
+        "explanation": _plain(getattr(poll, "explanation", None)),
+    }
+
+
+def build_poll_request(poll, translated: Dict[str, Any], now_ts: float) -> Dict[str, Any]:
+    """``sendPoll`` fields for a relayed poll, from the source poll + translations.
+
+    Channel polls are always anonymous. A quiz whose correct answer the bot
+    cannot see (the field is empty) goes out as a regular poll rather than
+    failing — ``correct_option_ids`` is required for quizzes. A close date is
+    copied only while it is still far enough ahead for Telegram to accept it
+    (5 s … ~30 days).
+    """
+    body: Dict[str, Any] = {
+        "question": _fit(translated["question"], POLL_QUESTION_MAX),
+        "options": [{"text": _fit(o, POLL_OPTION_MAX)} for o in translated["options"]],
+        "is_anonymous": True,
+    }
+    poll_type = str(getattr(getattr(poll, "type", None), "value", getattr(poll, "type", "")) or "").lower()
+    correct = list(getattr(poll, "correct_option_ids", None) or [])
+    if poll_type == "quiz" and correct:
+        body["type"] = "quiz"
+        body["correct_option_ids"] = sorted(correct)
+        if translated.get("explanation"):
+            body["explanation"] = _fit(translated["explanation"], POLL_EXPLANATION_MAX)
+    else:
+        body["type"] = "regular"
+    if getattr(poll, "allows_multiple_answers", None):
+        body["allows_multiple_answers"] = True
+    if getattr(poll, "allows_revoting", None) is not None:
+        body["allows_revoting"] = bool(poll.allows_revoting)
+    if getattr(poll, "members_only", None):
+        body["members_only"] = True
+    if getattr(poll, "country_codes", None):
+        body["country_codes"] = list(poll.country_codes)
+    if translated.get("description"):
+        body["description"] = _fit(translated["description"], POLL_DESCRIPTION_MAX)
+    close_date = getattr(poll, "close_date", None)
+    if close_date is not None:
+        ts = close_date.timestamp() if hasattr(close_date, "timestamp") else float(close_date)
+        if now_ts + 5 < ts < now_ts + 2_628_000:
+            body["close_date"] = int(ts)
+    if getattr(poll, "is_closed", None):
+        body["is_closed"] = True
+    return body
+
 
 def build_payload(msg, html_text: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     """Build payload dict for translation."""

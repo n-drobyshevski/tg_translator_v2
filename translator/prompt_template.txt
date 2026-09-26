@@ -26,7 +26,9 @@ When you see a hyperlink in the form <a href='URL'>TEXT</a>, you must translate 
     source: <b>…</b>, <i>…</i>, <u>…</u>, <s>…</s>, <code>…</code>,
     <tg-spoiler>…</tg-spoiler>, <blockquote>…</blockquote> and
     <blockquote expandable>…</blockquote>. Translate only the text inside the
-    tags; never add, drop, rename, or reorder a formatting tag.
+    tags; never add, drop, rename, or reorder a formatting tag. A custom emoji
+    <tg-emoji emoji-id="…">😀</tg-emoji> is copied exactly as it is — same
+    emoji-id, same emoji inside, same position in the sentence.
 12. **Personal names and Belarusian/Ukrainian place names – transliterate from the
     native language, not from Russian.** The post is in Russian, so names appear in
     their Russian spelling. When a personal name (given name + surname) or a place name

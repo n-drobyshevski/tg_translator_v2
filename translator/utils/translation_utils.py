@@ -25,9 +25,39 @@ def reload_prompt_template() -> str:
 # Instruction used for very short posts, which bypass the full template.
 SHORT_SYSTEM = (
     "You are a translator. Translate the user's HTML message literally from "
-    "Russian to English. Preserve every HTML tag, link href, hashtag and emoji "
-    "exactly. Do not add commentary and do not duplicate the original."
+    "Russian to English. Preserve every HTML tag (including <tg-emoji> custom "
+    "emoji with their emoji-id), link href, hashtag and emoji exactly. Do not "
+    "add commentary and do not duplicate the original."
 )
+
+
+# Instruction for fields that Telegram shows as plain text (poll question,
+# options, description, explanation): no markup survives there.
+PLAIN_SYSTEM = (
+    "You are a translator. Translate the user's text literally from Russian to "
+    "English. Output only the translation as plain text: no HTML or Markdown, no "
+    "quotes around it, no commentary. Keep emoji, numbers and hashtags as they are."
+)
+
+_ANY_TAG_RE = re.compile(r"<[^>]+>")
+
+
+async def translate_plain(
+    client: Union[Anthropic, AsyncAnthropic],
+    text: str,
+    usage_out: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Translate one plain-text field (e.g. a poll option); returns plain text.
+
+    Same request path as :func:`translate_html` (model capabilities, refusal and
+    max-tokens guards, usage reporting) with :data:`PLAIN_SYSTEM` instead of the
+    post template. Stray tags the model might still emit are removed and HTML
+    entities decoded, since the field is sent without a parse mode.
+    """
+    import html as _html
+
+    out = await translate_html(client, {"Html": text, "System": PLAIN_SYSTEM}, usage_out)
+    return _html.unescape(_ANY_TAG_RE.sub("", out)).strip()
 
 
 def build_messages(html_text: str) -> Tuple[str, str]:
@@ -86,7 +116,12 @@ async def translate_html(
     usage and the model that produced it, for cost reporting. The return value is
     unchanged (the translated text), so existing two-arg callers are unaffected.
     """
-    system_prompt, user_text = build_messages(payload["Html"])
+    if payload.get("System"):
+        # A caller-supplied instruction (translate_plain) replaces the post
+        # template, which would otherwise bold the first sentence and add <p>.
+        system_prompt, user_text = payload["System"], payload["Html"]
+    else:
+        system_prompt, user_text = build_messages(payload["Html"])
     create = client.messages.create
     model = CONFIG.ANTHROPIC_MODEL
     kwargs = dict(

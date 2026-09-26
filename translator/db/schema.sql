@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS events (
     output_tokens         INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-    model_used            TEXT    NOT NULL DEFAULT ''
+    model_used            TEXT    NOT NULL DEFAULT '',
+    -- Every destination message id of a relayed post, comma-separated (v3).
+    dest_message_ids      TEXT    NOT NULL DEFAULT ''
 );
 
 -- Core edit lookup: (source_channel_id, message_id) newest-first, only rows that
@@ -51,3 +53,5 @@ INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
 -- v2 added the token/cost columns above; bump the recorded version (no-op on
 -- fresh DBs where it was just inserted as '1', so force it forward).
 UPDATE schema_meta SET value = '2' WHERE key = 'version' AND value = '1';
+-- v3 added dest_message_ids (reply mapping + delete sync).
+UPDATE schema_meta SET value = '3' WHERE key = 'version' AND value = '2';

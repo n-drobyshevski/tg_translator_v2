@@ -228,6 +228,19 @@ class Config:
         """
         return [info.channel_id for info in self.channels.values() if info.channel_type == "source"]
 
+    def get_destination_msg_ids(self, source_channel_id: int, message_id) -> list:
+        """Every destination message id a source post produced, head first.
+
+        Used by reply mapping (the head) and delete sync (all of them). The
+        legacy JSON backend never recorded the full list, so it falls back to the
+        single id :meth:`get_destination_msg_id` returns.
+        """
+        if STORAGE_BACKEND == "sqlite":
+            from translator.db import events_dao
+            return events_dao.get_destination_msg_ids(source_channel_id, message_id)
+        single = self.get_destination_msg_id(source_channel_id, str(message_id))
+        return [int(single)] if single and str(single).lstrip("-").isdigit() else []
+
     def get_destination_msg_id(self, source_channel_id: int, message_id: str) -> str | None:
         """
         Get the destination message ID for a given source channel and message ID.
