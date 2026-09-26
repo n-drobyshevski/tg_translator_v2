@@ -530,3 +530,145 @@ async def test_setlang_rejects_unknown(admin_env):
     out = await admin_commands.handle_command(Msg("/setlang xx", from_user=u))
     assert out.startswith("❌")
     assert admin_prefs.get_lang(111) == "en"
+
+
+# --- Rich messages: every reply carries both renderings -----------------------
+
+from translator.services import admin_menu, rich_html  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/help", "/status", "/stats", "/stats 99", "/channels", "/prompt", "/logs",
+        "/admins", "/reload", "/setmodel claude-x", "/settemp 0.5", "/settemp x",
+        "/setmaxtokens 2000", "/seteffort low", "/setloglevel INFO", "/setrich on",
+        "/setrich maybe", "/removechannel test", "/bogus", "hello",
+    ],
+)
+async def test_every_reply_has_a_rich_rendering(admin_env, command):
+    out = await admin_commands.handle_command(Msg(command))
+    assert isinstance(out, rich_html.RichText), command
+    assert out.rich, f"{command} has no rich rendering"
+    assert len(out) <= rich_html.CLASSIC_LIMIT
+    assert "\n" not in out.rich.split("<pre")[0], "layout must not rely on newlines"
+
+
+async def test_outcomes_are_structured(admin_env):
+    ok = await admin_commands.handle_command(Msg("/settemp 0.5"))
+    bad = await admin_commands.handle_command(Msg("/settemp 9"))
+    assert ok.status is True and ok.startswith("✅")
+    assert bad.status is False and bad.startswith("❌")
+    assert rich_html.outcome(ok) is True and rich_html.outcome(bad) is False
+
+
+def test_help_groups_cover_every_published_command_exactly_once():
+    grouped = [n for _, names in admin_commands.COMMAND_GROUPS for n in names]
+    published = [n for n, _ in admin_commands.COMMAND_SPECS]
+    assert sorted(grouped) == sorted(published)
+
+
+async def test_help_is_collapsible_per_group(admin_env):
+    out = await admin_commands.handle_command(Msg("/help"))
+    assert out.rich.count("<details>") == len(admin_commands.COMMAND_GROUPS)
+    assert "<code>/setrich</code>" in out.rich
+    # Classic fallback: bold group name + expandable quote per group.
+    assert out.count("<blockquote expandable>") == len(admin_commands.COMMAND_GROUPS)
+
+
+async def test_logs_show_more_in_rich_than_in_classic(admin_env, monkeypatch):
+    log = admin_env / "bot.log"
+    log.write_text("\n".join(f"line {i}" for i in range(1, 301)), encoding="utf-8")
+    monkeypatch.setattr(admin_commands, "LOG_FILE_PATH", str(log))
+    out = await admin_commands.handle_command(Msg("/logs"))
+    assert "line 151" in out.rich and "line 150\n" not in out.rich
+    assert "line 271" in out and "line 270" not in out
+
+
+async def test_prompt_is_complete_in_rich_and_fitted_in_classic(admin_env, monkeypatch):
+    prompt = admin_env / "prompt.txt"
+    body = "\n".join(f"rule {i} {'x' * 60}" for i in range(120))  # ≈ 8 KB
+    prompt.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(admin_commands, "PROMPT_TEMPLATE_PATH", prompt)
+    out = await admin_commands.handle_command(Msg("/prompt"))
+    assert "rule 119" in out.rich  # nothing cut from the rich message
+    assert "rule 0 " in out and "rule 119" not in out  # classic keeps the start
+    assert len(out) <= rich_html.CLASSIC_LIMIT
+    assert "/setprompt" in out  # the footer survives truncation
+
+
+async def test_setrich_persists_the_kill_switch(admin_env):
+    out = await admin_commands.handle_command(Msg("/setrich off"))
+    assert out.startswith("✅")
+    assert "ADMIN_RICH_MESSAGES=0" in (admin_env / ".env").read_text("utf-8")
+    assert rich_html.rich_env_enabled() is False
+    out = await admin_commands.handle_command(Msg("/setrich on"))
+    assert rich_html.rich_env_enabled() is True
+    assert "ADMIN_RICH_MESSAGES=1" in (admin_env / ".env").read_text("utf-8")
+
+
+async def test_setrich_rejects_other_values(admin_env):
+    out = await admin_commands.handle_command(Msg("/setrich maybe"))
+    assert out.startswith("❌")
+
+
+async def test_setrich_on_warns_when_this_kurigram_cannot(admin_env, monkeypatch):
+    monkeypatch.setattr(admin_menu, "HAS_RICH_MESSAGES", False)
+    out = await admin_commands.handle_command(Msg("/setrich on"))
+    assert out.startswith("✅") and "can't send rich messages" in out
+
+
+async def test_reload_picks_up_an_out_of_band_rich_switch(admin_env):
+    (admin_env / ".env").write_text("ADMIN_RICH_MESSAGES=0\n", encoding="utf-8")
+    assert rich_html.rich_env_enabled() is True
+    out = await admin_commands.handle_command(Msg("/reload"))
+    assert out.startswith("✅")
+    assert rich_html.rich_env_enabled() is False
+
+
+def test_rich_toggle_in_settings_routes_through_setrich(admin_env):
+    from translator.services import admin_menu as menu
+
+    _title, rows = menu.build_menu("settings")
+    data = [cd for row in rows for _, cd in row]
+    assert "set:rich:off" in data  # on by default, so the button turns it off
+    res = menu.handle_callback("set:rich:off")
+    assert res.alert == "Saved"
+    assert rich_html.rich_env_enabled() is False
+    assert "nav:settings" in [cd for row in res.rows for _, cd in row]
+    _title, rows = menu.build_menu("settings")
+    assert "set:rich:on" in [cd for row in rows for _, cd in row]
+
+
+async def test_wizard_shows_progress(admin_env):
+    u = _user(111)
+    admin_wizard.start(111)
+    first = admin_wizard.prompt(111)
+    assert "1/3" in first and "▶️" in first.rich
+    r1 = await admin_commands.handle_command(Msg("news", from_user=u))
+    assert "✅ Name: <code>news</code>" in r1.rich
+    assert "▶️ <b>Source channel id</b>" in r1.rich
+
+
+async def test_richcheck_outside_the_dm_dispatcher_is_not_unknown(admin_env):
+    out = await admin_commands.handle_command(Msg("/richcheck"))
+    assert out.startswith("❌") and "Unknown" not in out
+
+
+def test_every_model_preset_has_a_price_row():
+    for _label, value in admin_menu.MODEL_PRESETS:
+        assert value in admin_menu.MODEL_PRICING, value
+
+
+async def test_belarusian_screens_render(admin_env):
+    u = _user(111)
+    await admin_commands.handle_command(Msg("/setlang be", from_user=u))
+    from translator.services import admin_i18n
+
+    keys = [k for k in admin_i18n._EN if "_" in k]
+    for command in ("/status", "/help", "/stats", "/admins", "/settemp x"):
+        out = await admin_commands.handle_command(Msg(command, from_user=u))
+        assert out.rich, command
+        # t() returns the raw key on a miss; none may reach the operator.
+        leaked = [k for k in keys if k in out or k in out.rich]
+        assert not leaked, f"{command}: {leaked}"

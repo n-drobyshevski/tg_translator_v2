@@ -48,7 +48,7 @@ class TelegramErrorHandler(logging.Handler):
             msg = self.format(record)
             key = f"log:{record.name}:{record.funcName}:{record.lineno}"
             asyncio.run_coroutine_threadsafe(
-                send_alert(msg[:4000], key=key), self._loop
+                send_alert(msg[:16000], key=key), self._loop
             )
         except Exception:
             # A logging handler must never raise; and we must not log here (would

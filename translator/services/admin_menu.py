@@ -27,7 +27,7 @@ from __future__ import annotations
 import html
 import inspect
 import logging
-import os
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -42,8 +42,22 @@ from translator.services import (
     admin_prefs,
     admin_store,
     admin_wizard,
+    rich_html,
 )
 from translator.services.admin_i18n import t
+from translator.services.rich_html import (
+    KV,
+    Bullets,
+    Details,
+    Doc,
+    Footer,
+    Heading,
+    Note,
+    Para,
+    Status,
+    Table,
+    esc,
+)
 from translator.utils.model_capabilities import supports_effort, supports_sampling_params
 
 log = logging.getLogger("ADMIN.MENU")
@@ -121,30 +135,82 @@ HAS_KEYBOARD_HINTS = _accepts(
     pyro_types.ReplyKeyboardMarkup, "is_persistent"
 ) and _accepts(pyro_types.ReplyKeyboardMarkup, "placeholder")
 
-# Bot API 10.3 / Telegram 12.10: buttons *inside* the message body rather than on
-# the keyboard strip below it. Needs a send path (`Message.reply_rich`) and an
-# edit path (`rich_message=` on edit_message_text) — the menu tree navigates by
-# editing one message in place, so without the latter this would be unusable.
+# Bot API 10.1–10.3 rich messages: the whole admin DM is sent as a rich message
+# (headings, tables, collapsible sections, buttons inside the body), with every
+# send keeping a classic-HTML fallback — see :mod:`translator.services.rich_html`.
+# Needs the send path with a keyboard (`Message.reply_rich(reply_markup=…)`,
+# kurigram 2.2.25+), the edit path (`rich_message=` on edit_message_text, which
+# the menu tree navigates by), and the 10.3 button types (2.2.26).
 HAS_RICH_MESSAGES = (
     hasattr(Client, "send_rich_message")
     and getattr(pyro_types, "InputRichMessage", None) is not None
     and getattr(pyro_types, "RichMessageButton", None) is not None
     and hasattr(pyro_types.Message, "reply_rich")
+    and _accepts_arg(getattr(pyro_types.Message, "reply_rich", None), "reply_markup")
     and _accepts_arg(pyro_types.CallbackQuery.edit_message_text, "rich_message")
 )
 
-# Second gate, read live so it can be flipped with a `/reload` rather than a
-# restart. Default OFF on purpose: the rich HTML dialect is validated only by
-# Telegram's servers (kurigram passes `html=` straight through), and production
-# has been running a kurigram older than the pin. Opt in once, deliberately.
-RICH_MENUS_ENV = "ADMIN_RICH_MENUS"
+# Kept for callers of the menus-only era; the switch now covers every message.
+RICH_MENUS_ENV = rich_html.LEGACY_RICH_ENV
 
 
-def rich_menus_enabled() -> bool:
-    """True when rich-message menus are both supported and switched on."""
-    if not HAS_RICH_MESSAGES:
-        return False
-    return os.getenv(RICH_MENUS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+class _RichBreaker:
+    """Stops paying for rich sends Telegram keeps refusing.
+
+    The rich dialect can only be validated server-side. If Telegram rejects it
+    across the board (a dialect change, a server-side rollout gap), every screen
+    would otherwise cost one or two failed API calls before its classic
+    fallback. After ``THRESHOLD`` consecutive rejections rich is skipped for
+    ``COOLDOWN`` seconds; any accepted rich send closes it again.
+    """
+
+    THRESHOLD = 3
+    COOLDOWN = 900.0
+
+    def __init__(self):
+        self.failures = 0
+        self.opened_at: Optional[float] = None
+
+    def is_open(self) -> bool:
+        if self.opened_at is None:
+            return False
+        if time.monotonic() - self.opened_at >= self.COOLDOWN:
+            self.reset()
+            return False
+        return True
+
+    def record_failure(self) -> None:
+        self.failures += 1
+        if self.failures >= self.THRESHOLD and self.opened_at is None:
+            self.opened_at = time.monotonic()
+            log.warning(
+                "%d rich sends refused in a row; using classic messages for %ds",
+                self.failures,
+                int(self.COOLDOWN),
+            )
+
+    def record_success(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.failures = 0
+        self.opened_at = None
+
+
+_breaker = _RichBreaker()
+
+
+def rich_enabled() -> bool:
+    """True when rich messages are supported, switched on, and not tripped."""
+    return (
+        HAS_RICH_MESSAGES
+        and rich_html.rich_env_enabled()
+        and not _breaker.is_open()
+    )
+
+
+# Back-compat name from when only menus could be rich.
+rich_menus_enabled = rich_enabled
 
 
 def capability_summary() -> str:
@@ -158,9 +224,9 @@ def capability_summary() -> str:
             ("chat_picker", HAS_CHAT_PICKER),
             ("kbd_hints", HAS_KEYBOARD_HINTS),
             ("rich", HAS_RICH_MESSAGES),
-            ("rich_enabled", rich_menus_enabled()),
+            ("rich_enabled", rich_enabled()),
         )
-    )
+    ) + f" rich_env={rich_html.rich_env_source()} rich_breaker={'open' if _breaker.is_open() else 'closed'}"
 
 
 # --- Persistent reply keyboard ------------------------------------------------
@@ -240,6 +306,14 @@ TEMP_PRESETS = ["0", "0.3", "0.5", "0.7", "1.0"]
 # the old 1500/2000/4000/8192 ladder no longer brackets the default at all.
 TOKEN_PRESETS = ["4000", "8000", "16000", "32000"]
 EFFORT_PRESETS = ["low", "medium", "high"]
+# Published list prices per model (USD per 1M tokens: input, output) and the
+# one-line note shown in the Model menu. Every preset needs an entry — a test
+# asserts it, so a new preset can't ship with a blank price row.
+MODEL_PRICING = {
+    "claude-haiku-4-5": ("$1", "$5", "txt_model_note_haiku"),
+    "claude-sonnet-5": ("$2", "$10", "txt_model_note_sonnet"),
+    "claude-opus-5": ("$5", "$25", "txt_model_note_opus"),
+}
 
 
 def _back_to_settings(lang: str = "en") -> Row:
@@ -270,11 +344,22 @@ class CallbackResult:
 
 
 def _settings_menu(lang: str = "en") -> Tuple[str, Rows]:
-    title = t("settings_title", lang, summary=admin_commands._config_summary(lang))
+    title = Doc(
+        Heading(t("h_settings", lang)),
+        KV(admin_commands._config_pairs(lang)),
+        Footer(t("hint_settings", lang)),
+    ).render()
+    rich_on = admin_commands._rich_active()
     rows: Rows = [
         [(t("settings_btn_log", lang), "nav:log")],
         [(t("btn_channels", lang), "nav:channels")],
         [(t("btn_admins", lang), "nav:admins")],
+        [
+            (
+                t("settings_btn_rich", lang, state=admin_commands._on_off(rich_on, lang)),
+                f"set:rich:{'off' if rich_on else 'on'}",
+            )
+        ],
         [(t("btn_language", lang), "nav:lang")],
         [(t("settings_btn_close", lang), "nav:close")],
     ]
@@ -309,17 +394,26 @@ def _ai_menu(lang: str = "en") -> Tuple[str, Rows]:
     the active model ignores rather than showing two knobs that look equal.
     """
     model = str(CONFIG.ANTHROPIC_MODEL)
-    inert = t("ai_inert_flag", lang)
-    title = t(
-        "ai_title",
-        lang,
-        model=html.escape(model),
-        temp=CONFIG.ANTHROPIC_TEMPERATURE,
-        temp_flag="" if supports_sampling_params(model) else inert,
-        tokens=CONFIG.ANTHROPIC_MAX_TOKENS,
-        effort=html.escape(str(CONFIG.ANTHROPIC_EFFORT)),
-        effort_flag="" if supports_effort(model) else inert,
-    )
+    inert = f" ({t('val_ignored', lang)})"
+    title = Doc(
+        Heading(t("h_ai", lang)),
+        KV(
+            [
+                (t("lbl_model", lang), f"<code>{esc(model)}</code>"),
+                (
+                    t("lbl_temp", lang),
+                    f"{CONFIG.ANTHROPIC_TEMPERATURE}"
+                    + ("" if supports_sampling_params(model) else inert),
+                ),
+                (t("lbl_tokens", lang), CONFIG.ANTHROPIC_MAX_TOKENS),
+                (
+                    t("lbl_effort", lang),
+                    esc(CONFIG.ANTHROPIC_EFFORT) + ("" if supports_effort(model) else inert),
+                ),
+            ]
+        ),
+        Footer(t("hint_ai", lang)),
+    ).render()
     rows: Rows = [
         [(t("settings_btn_model", lang), "nav:model")],
         [
@@ -339,16 +433,30 @@ def _prompt_menu(lang: str = "en") -> Tuple[str, Rows]:
     """Read-only view of the current prompt template + how to change it.
 
     Editing needs multi-line typed input, which inline buttons can't capture, so
-    this shows the template (via the shared ``/prompt`` handler) and points at
-    ``/setprompt``."""
-    title = admin_commands._cmd_prompt(lang) + t("prompt_menu_hint", lang)
-    rows: Rows = [_back_to_ai(lang)]
-    return title, rows
+    this shows the template (the shared ``/prompt`` doc, whose footer points at
+    ``/setprompt``)."""
+    return admin_commands._cmd_prompt(lang), [_back_to_ai(lang)]
 
 
 def _model_menu(lang: str = "en") -> Tuple[str, Rows]:
     model = str(CONFIG.ANTHROPIC_MODEL)
-    title = t("model_title", lang, current=html.escape(model))
+    table_rows = []
+    for label, value in MODEL_PRESETS:
+        price_in, price_out, note_key = MODEL_PRICING[value]
+        marker = "● " if value == model else ""
+        table_rows.append([f"{marker}{esc(label)}", price_in, price_out, t(note_key, lang)])
+    title = Doc(
+        Heading(t("h_model", lang)),
+        KV([(t("lbl_current", lang), f"<code>{esc(model)}</code>")]),
+        Para(t("txt_model_pricing", lang), tight=True),
+        Table(
+            [t("col_model", lang), t("col_input", lang), t("col_output", lang), t("col_notes", lang)],
+            table_rows,
+            classic_row=lambda r: f"• {r[0]} — {r[1]} / {r[2]} — {r[3]}",
+        ),
+        Details(t("h_billing", lang), Para(t("txt_model_billing", lang))),
+        Footer(t("txt_model_active", lang) + " " + t("hint_setmodel", lang)),
+    ).render()
     rows: Rows = _preset_rows(MODEL_PRESETS, "model", model)
     # The live id is often a value no preset covers (/setmodel takes anything),
     # and it's what an operator needs to paste when reporting or reverting.
@@ -359,10 +467,18 @@ def _model_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 def _temp_menu(lang: str = "en") -> Tuple[str, Rows]:
     model = str(CONFIG.ANTHROPIC_MODEL)
-    title = t("temp_title", lang, current=CONFIG.ANTHROPIC_TEMPERATURE)
     live = supports_sampling_params(model)
-    if not live:
-        title += t("temp_inert_note", lang, model=html.escape(model))
+    title = Doc(
+        Heading(t("h_temp", lang)),
+        KV([(t("lbl_current", lang), CONFIG.ANTHROPIC_TEMPERATURE)]),
+        None if live else Note(t("txt_temp_inert", lang, model=esc(model))),
+        Para(t("txt_temp_intro", lang), tight=True),
+        Bullets(
+            [t("txt_temp_opt_0", lang), t("txt_temp_opt_mid", lang), t("txt_temp_opt_1", lang)]
+        ),
+        Details(t("h_cost", lang), Para(t("txt_temp_cost", lang))),
+        Footer(t("hint_settemp", lang)),
+    ).render()
     # On the modern surface every value is equally ignored, so the whole row is
     # greyed out — showing five tappable presets that change nothing is worse
     # than showing none.
@@ -378,7 +494,15 @@ def _temp_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 def _tokens_menu(lang: str = "en") -> Tuple[str, Rows]:
     current = str(CONFIG.ANTHROPIC_MAX_TOKENS)
-    title = t("tokens_title", lang, current=current)
+    title = Doc(
+        Heading(t("h_tokens", lang)),
+        KV([(t("lbl_current", lang), current)]),
+        Para(t("txt_tokens_intro", lang), tight=True),
+        Bullets([t("txt_tokens_opt_low", lang), t("txt_tokens_opt_high", lang)]),
+        Note(t("txt_tokens_thinking", lang)),
+        Details(t("h_cost", lang), Para(t("txt_tokens_cost", lang))),
+        Footer(t("hint_settokens", lang)),
+    ).render()
     row: Row = [
         (v, (DISABLED_PREFIX if v == current else "") + f"set:tokens:{v}")
         for v in TOKEN_PRESETS
@@ -390,10 +514,22 @@ def _effort_menu(lang: str = "en") -> Tuple[str, Rows]:
     """Thinking effort — the modern surface's replacement for temperature."""
     model = str(CONFIG.ANTHROPIC_MODEL)
     current = str(CONFIG.ANTHROPIC_EFFORT)
-    title = t("effort_title", lang, current=html.escape(current))
     live = supports_effort(model)
-    if not live:
-        title += t("effort_inert_note", lang, model=html.escape(model))
+    title = Doc(
+        Heading(t("h_effort", lang)),
+        KV([(t("lbl_current", lang), esc(current))]),
+        None if live else Note(t("txt_effort_inert", lang, model=esc(model))),
+        Para(t("txt_effort_intro", lang), tight=True),
+        Bullets(
+            [
+                t("txt_effort_opt_low", lang),
+                t("txt_effort_opt_medium", lang),
+                t("txt_effort_opt_high", lang),
+            ]
+        ),
+        Details(t("h_cost", lang), Para(t("txt_effort_cost", lang))),
+        Footer(t("hint_seteffort", lang)),
+    ).render()
     row: Row = [
         (
             v,
@@ -406,7 +542,11 @@ def _effort_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 
 def _log_menu(lang: str = "en") -> Tuple[str, Rows]:
-    title = t("log_title", lang, current=CONFIG.LOG_LEVEL)
+    title = Doc(
+        Heading(t("h_log", lang)),
+        Para(t("txt_log_intro", lang)),
+        KV([(t("lbl_log_level", lang), esc(CONFIG.LOG_LEVEL))]),
+    ).render()
     rows: Rows = [[(t("logs_btn_view", lang), "nav:logsview")]]
     levels = sorted(admin_commands._VALID_LOG_LEVELS)
     rows += [[(lvl, f"set:log:{lvl}")] for lvl in levels]
@@ -425,7 +565,7 @@ def _logs_view(lang: str = "en") -> Tuple[str, Rows]:
 
 
 def _lang_menu(lang: str = "en") -> Tuple[str, Rows]:
-    title = t("lang_title", lang)
+    title = Doc(Heading(t("h_lang", lang)), Para(t("txt_lang_intro", lang))).render()
     rows: Rows = [
         [(t("lang_en", lang), "setlang:en")],
         [(t("lang_be", lang), "setlang:be")],
@@ -435,7 +575,6 @@ def _lang_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 
 def _channels_menu(lang: str = "en") -> Tuple[str, Rows]:
-    title = admin_commands._cmd_channels(lang) + t("channels_menu_hint", lang)
     rows: Rows = [[(t("btn_add_channel_pair", lang), "addch:start")]]
     # One copy button per pair, carrying the exact argument list /editchannel
     # wants. Selecting a -100… id out of a <code> block on a phone is the kind of
@@ -445,15 +584,17 @@ def _channels_menu(lang: str = "en") -> Tuple[str, Rows]:
         dst = CONFIG.channels.get(name + "_en")
         dst_id = dst.channel_id if dst else ""
         rows.append([(f"📋 {name}", f"{COPY_PREFIX}{name} {src.channel_id} {dst_id}")])
+    hints = [t("hint_channels_add", lang)]
     if len(rows) > 1:
-        title += t("channels_copy_hint", lang)
+        hints.append(t("hint_channels_copy", lang))
+    title = admin_commands._channels_doc(lang).add(Footer(" ".join(hints))).render()
     rows.append([(t("settings_btn_rmch", lang), "nav:rmch")])
     rows.append(_back_to_settings(lang))
     return title, rows
 
 
 def _rmch_menu(lang: str = "en") -> Tuple[str, Rows]:
-    title = t("rmch_menu_title", lang)
+    title = Doc(Heading(t("h_rmch", lang)), Para(t("txt_rmch_intro", lang))).render()
     removable = [
         n
         for n in admin_commands._logical_names()
@@ -468,7 +609,10 @@ def _rmch_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 
 def _rmch_confirm(name: str, lang: str = "en") -> Tuple[str, Rows]:
-    title = t("rmch_confirm_title", lang, name=name)
+    title = Doc(
+        Heading(t("h_rmch_confirm", lang, name=esc(name))),
+        Note(t("txt_rmch_confirm", lang)),
+    ).render()
     rows: Rows = [
         [
             (t("btn_yes_remove", lang), f"rmchok:{name}"),
@@ -480,18 +624,11 @@ def _rmch_confirm(name: str, lang: str = "en") -> Tuple[str, Rows]:
 
 def _admins_menu(lang: str = "en") -> Tuple[str, Rows]:
     admins = admin_store.list_admins()
-    lines = [t("admins_menu_title", lang)]
-    for a in admins:
-        if a["label"]:
-            lines.append(f"{html.escape(a['label'])} (<code>{a['id']}</code>)")
-        elif a["resolved"]:
-            lines.append(f"{html.escape(a['resolved'])} (<code>{a['id']}</code>)")
-        else:
-            lines.append(f"<code>{a['id']}</code>")
-    if not admins:
-        lines.append(t("common_none", lang))
-    lines += ["", t("admins_menu_help", lang)]
-    title = "\n".join(lines)
+    title = Doc(
+        Heading(t("h_admins", lang)),
+        admin_commands.admins_table(admins, lang),
+        Footer(t("hint_admins_menu", lang)),
+    ).render()
     rows: Rows = [
         [(f"🗑️ {a['display']}", f"rmadmin:{a['id']}")] for a in admins
     ]
@@ -501,7 +638,10 @@ def _admins_menu(lang: str = "en") -> Tuple[str, Rows]:
 
 
 def _admin_confirm(uid: str, lang: str = "en") -> Tuple[str, Rows]:
-    title = t("admin_confirm_title", lang, uid=html.escape(uid))
+    title = Doc(
+        Heading(t("h_admin_confirm", lang, uid=esc(uid))),
+        Note(t("txt_admin_confirm", lang)),
+    ).render()
     rows: Rows = [
         [
             (t("btn_yes_remove", lang), f"rmadminok:{uid}"),
@@ -511,8 +651,17 @@ def _admin_confirm(uid: str, lang: str = "en") -> Tuple[str, Rows]:
     return title, rows
 
 
+def add_admin_prompt(lang: str = "en"):
+    """The message that opens the add-admin user picker."""
+    return Doc(
+        Heading(t("h_add_admin", lang)),
+        Para(t("txt_add_admin_pick", lang)),
+        Para(t("txt_add_admin_typed", lang)),
+    ).render()
+
+
 def build_menu(menu_id: str, lang: str = "en") -> Tuple[str, Rows]:
-    """Return ``(title_html, rows)`` for a navigation target."""
+    """Return ``(title, rows)`` for a navigation target (title is a RichText)."""
     if menu_id == "ai":
         return _ai_menu(lang)
     if menu_id == "prompt":
@@ -563,7 +712,10 @@ def channels_entry(lang: str = "en") -> Tuple[str, Rows]:
 
 def _fallback(lang: str = "en") -> CallbackResult:
     return CallbackResult(
-        t("menu_expired", lang),
+        Doc(
+            Status(None, t("txt_menu_expired", lang), icon="⌛"),
+            Para(t("txt_menu_expired_body", lang)),
+        ).render(),
         None,
         t("alert_expired", lang),
     )
@@ -586,7 +738,12 @@ def handle_callback(
         target = parts[1] if len(parts) > 1 else "settings"
         if target == "close":
             return CallbackResult(
-                t("menu_closed", lang), None, t("alert_closed", lang)
+                Doc(
+                    Status(True, t("ok_menu_closed", lang)),
+                    Para(t("txt_menu_reopen", lang)),
+                ).render(),
+                None,
+                t("alert_closed", lang),
             )
         title, rows = build_menu(target, lang)
         return CallbackResult(title, rows)
@@ -608,14 +765,16 @@ def handle_callback(
             "tokens": admin_commands._cmd_setmaxtokens,
             "effort": admin_commands._cmd_seteffort,
             "log": admin_commands._cmd_setloglevel,
+            "rich": admin_commands._cmd_setrich,
         }
         fn = setters.get(kind)
         if fn is None:
             return _fallback(lang)
         text = fn([value], lang)
-        alert = t("alert_saved", lang) if text.startswith("✅") else t("alert_error", lang)
-        # model/temp/tokens now live under AI Settings; log stays in Settings.
-        back = _back_to_settings(lang) if kind == "log" else _back_to_ai(lang)
+        ok = rich_html.outcome(text)
+        alert = t("alert_saved", lang) if ok else t("alert_error", lang)
+        # model/temp/tokens/effort live under AI Settings; log and rich in Settings.
+        back = _back_to_settings(lang) if kind in ("log", "rich") else _back_to_ai(lang)
         return CallbackResult(text, [back], alert)
 
     if head == "rmch" and len(parts) >= 2:
@@ -624,7 +783,8 @@ def handle_callback(
 
     if head == "rmchok" and len(parts) >= 2:
         text = admin_commands._cmd_removechannel([parts[1]], lang)
-        alert = t("alert_removed", lang) if text.startswith("✅") else t("alert_error", lang)
+        ok = rich_html.outcome(text)
+        alert = t("alert_removed", lang) if ok else t("alert_error", lang)
         return CallbackResult(text, [_back_to_settings(lang)], alert)
 
     if head == "rmadmin" and len(parts) >= 2:
@@ -633,7 +793,7 @@ def handle_callback(
 
     if head == "rmadminok" and len(parts) >= 2:
         ok, msg = admin_store.remove_admin(parts[1])
-        text = ("✅ " if ok else "❌ ") + html.escape(msg)
+        text = admin_commands._outcome(ok, msg)
         alert = t("alert_removed", lang) if ok else t("alert_error", lang)
         return CallbackResult(text, [_back_to_settings(lang)], alert)
 
@@ -699,88 +859,143 @@ def to_inline_markup(rows: Rows, *, plain: bool = False):
     return pyro_types.InlineKeyboardMarkup(keyboard)
 
 
-def rows_to_rich_html(title_html: str, rows: Rows) -> Optional[str]:
-    """Render a menu as rich-message HTML, or None if it can't be expressed.
+# Bot API limits for buttons inside a rich message body.
+_CALLBACK_DATA_MAX_BYTES = 64
+_COPY_TEXT_MAX = 256
+_RICH_ROW_MAX = 8
 
-    Buttons become ``<tg-button-row>`` blocks appended to the title HTML the
-    menus already build — the rich dialect accepts the same inline tags the
-    titles use (``b i u s code a tg-spoiler`` plus ``p pre blockquote``), so the
-    titles need no second rendering path.
 
-    Returns **None** when any button is a copy or disabled button. Only
-    ``type="callback_data"`` is a confirmed spelling in this dialect; rather than
-    guess an attribute name for the others, those menus skip the rich tier and
-    render exactly as they do today. Menus are all-or-nothing here so a single
-    unsupported button can never silently vanish from a row.
+def rich_button_rows(rows: Rows) -> Optional[str]:
+    """Render inline rows as in-body ``<tg-button-row>`` blocks, or None.
+
+    Every button kind the menus use has a rich spelling (Bot API 10.3):
+    callback → ``type="callback_data"`` (red via ``style="danger"`` for the
+    destructive heads), ``copy:`` → ``type="copy_text"``, ``x:`` →
+    ``type="disabled"``. Returns **None** only when a row can't be expressed
+    within the documented limits (callback data over 64 bytes, copy text over
+    256 characters, more than 8 buttons in a row) — the caller then keeps the
+    rich body but sends the buttons as an ordinary keyboard, so no button can
+    silently vanish.
     """
-    parts = [title_html]
+    parts = []
     for row in rows:
+        if len(row) > _RICH_ROW_MAX:
+            return None
         buttons = []
         for label, data in row:
-            if data.startswith((COPY_PREFIX, DISABLED_PREFIX)):
-                return None
-            # Both go into HTML *attributes* or element text, and labels are
-            # interpolated from channel names and admin labels, so neither is
-            # trusted: escape both.
-            buttons.append(
-                f'<tg-button type="callback_data" data="{html.escape(data)}">'
-                f"{html.escape(label)}</tg-button>"
-            )
+            # Labels come from channel names and admin labels, data from ids:
+            # both land in HTML text/attributes, so neither is trusted.
+            label_html = html.escape(label)
+            if data.startswith(COPY_PREFIX):
+                copy_text = data[len(COPY_PREFIX) :]
+                if len(copy_text) > _COPY_TEXT_MAX:
+                    return None
+                buttons.append(
+                    f'<tg-button type="copy_text" text="{html.escape(copy_text)}">'
+                    f"{label_html}</tg-button>"
+                )
+            elif data.startswith(DISABLED_PREFIX):
+                buttons.append(f'<tg-button type="disabled">{label_html}</tg-button>')
+            else:
+                if len(data.encode("utf-8")) > _CALLBACK_DATA_MAX_BYTES:
+                    return None
+                style = (
+                    ' style="danger"' if data.split(":", 1)[0] in _DANGER_HEADS else ""
+                )
+                buttons.append(
+                    f'<tg-button type="callback_data"{style} data="{html.escape(data)}">'
+                    f"{label_html}</tg-button>"
+                )
         if buttons:
             parts.append(f"<tg-button-row>{''.join(buttons)}</tg-button-row>")
     return "".join(parts)
 
 
-async def send_with_markup(send, text: str, rows: Rows, *, send_rich=None, **kwargs):
-    """``await send(text, reply_markup=…)``, degrading the markup, not the message.
+def rows_to_rich_html(title_html: str, rows: Rows) -> Optional[str]:
+    """Rich body ``title_html`` followed by its buttons, or None if inexpressible."""
+    buttons = rich_button_rows(rows)
+    return None if buttons is None else title_html + buttons
 
-    Three tiers: full chrome → plain callback buttons → **no markup at all**. The
-    last one is the point. An admin surface exists to report state, so delivering
-    the text without its buttons beats delivering nothing — and "the operator saw
-    nothing" is exactly how the missing-``CopyTextButton`` bug presented.
 
-    Markup is built outside the send so a construction failure (a kurigram that
-    can't express the button) is logged separately from a Telegram rejection.
-    ``MessageNotModified`` is a real outcome — identical content — not a markup
-    problem, so it is re-raised untouched from any tier.
+async def _try_rich(send_rich, rich_body: str, markup, shape: str):
+    """One rich attempt. Returns ``(True, result)`` or ``(False, None)``."""
+    from pyrogram.errors import MessageNotModified
 
-    ``send_rich`` is an optional separate callable taking an ``InputRichMessage``.
-    It has to be separate rather than another kwarg on ``send``: the first send of
-    a menu goes through ``Message.reply_text``, which does **not** accept
-    ``rich_message`` — only ``reply_rich`` and the edit methods do. When it is
-    given and rich menus are switched on, it becomes the top tier; a rejection
-    there (the dialect is validated only by Telegram) falls through to the
-    keyboard tiers below, which is what makes an unverifiable dialect safe.
+    try:
+        result = await send_rich(
+            pyro_types.InputRichMessage(html=rich_body), reply_markup=markup
+        )
+    except MessageNotModified:
+        raise
+    except Exception:
+        # WARNING, never ERROR: ERROR records are DM'd to the admin by the log
+        # forwarder, and this is an expected, handled degradation.
+        _breaker.record_failure()
+        log.warning("rich send refused (%s); falling back", shape, exc_info=True)
+        return False, None
+    _breaker.record_success()
+    return True, result
+
+
+async def send_with_markup(
+    send, text: str, rows: Rows, *, send_rich=None, rich_body=None, **kwargs
+):
+    """Send a screen, degrading the *markup and format*, never the message.
+
+    Tiers, first success wins:
+
+    1. rich body with the buttons inside it (``<tg-button-row>``);
+    2. rich body with the buttons as an ordinary inline keyboard — keeps the
+       rich layout if only the in-body button dialect is refused;
+    3. classic HTML with the styled keyboard (Bot API 9.4/10.2 chrome);
+    4. classic HTML with plain callback buttons;
+    5. classic HTML with **no markup at all**.
+
+    ``send(text, reply_markup=…)`` is the classic callable; ``send_rich(rich,
+    reply_markup=…)`` takes an ``InputRichMessage`` and is separate because
+    ``Message.reply_text`` does not accept ``rich_message`` — only
+    ``reply_rich`` and the edit methods do. ``rich_body`` is the rich HTML; when
+    omitted it is derived from ``text``. The rich tiers run only when
+    :func:`rich_enabled`. Markup is built outside the send so a construction
+    failure is logged apart from a Telegram rejection, and ``MessageNotModified``
+    (identical content — a real outcome) is re-raised untouched from any tier.
     """
     from pyrogram.errors import MessageNotModified
 
-    if send_rich is not None and rich_menus_enabled():
-        rich_html = rows_to_rich_html(text, rows)
-        if rich_html is not None:
+    rows = rows or []
+    if send_rich is not None and rich_enabled():
+        body = rich_body if rich_body is not None else rich_html.from_classic(text).rich
+        if body:
+            in_body = rich_button_rows(rows) if rows else ""
+            if in_body is not None:
+                ok, result = await _try_rich(send_rich, body + in_body, None, "in-body buttons")
+                if ok:
+                    return result
+            if rows:
+                try:
+                    markup = to_inline_markup(rows)
+                except Exception:
+                    log.warning("could not build markup for rich send", exc_info=True)
+                else:
+                    ok, result = await _try_rich(send_rich, body, markup, "keyboard")
+                    if ok:
+                        return result
+
+    if rows:
+        for plain in (False, True):
+            shape = "plain" if plain else "styled"
             try:
-                return await send_rich(pyro_types.InputRichMessage(html=rich_html))
+                markup = to_inline_markup(rows, plain=plain)
+            except Exception:
+                log.warning("could not build %s markup", shape, exc_info=True)
+                continue
+            try:
+                return await send(text, reply_markup=markup, **kwargs)
             except MessageNotModified:
                 raise
             except Exception:
-                log.warning(
-                    "send refused rich markup; falling back to a keyboard",
-                    exc_info=True,
-                )
-
-    for plain in (False, True):
-        shape = "plain" if plain else "styled"
-        try:
-            markup = to_inline_markup(rows, plain=plain)
-        except Exception:
-            log.warning("could not build %s markup", shape, exc_info=True)
-            continue
-        try:
-            return await send(text, reply_markup=markup, **kwargs)
-        except MessageNotModified:
-            raise
-        except Exception:
-            log.warning("send refused %s markup", shape, exc_info=True)
-    log.warning("falling back to a message with no buttons")
+                log.warning("send refused %s markup", shape, exc_info=True)
+        log.warning("falling back to a message with no buttons")
     return await send(text, reply_markup=None, **kwargs)
 
 
@@ -872,6 +1087,8 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
     """Register the admin-gated ``on_callback_query`` handler on ``pyro``."""
     from pyrogram.errors import MessageNotModified
 
+    from translator.services import admin_send  # lazy: avoid import cycle
+
     @pyro.on_callback_query(admin_commands._admin_filter())
     async def _on_callback(client, cq):  # noqa: ANN001
         uid = getattr(getattr(cq, "from_user", None), "id", None)
@@ -886,9 +1103,9 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
             except Exception:
                 pass
             try:
-                await cq.message.reply_text(
-                    t("add_admin_prompt", lang),
-                    parse_mode=enums.ParseMode.HTML,
+                await admin_send.reply(
+                    cq.message,
+                    add_admin_prompt(lang),
                     reply_markup=build_add_admin_keyboard(lang),
                 )
             except Exception:
@@ -904,12 +1121,10 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
                 pass
             admin_wizard.start(uid)
             try:
-                await cq.message.reply_text(
-                    t("wiz_prompt_name", lang),
-                    parse_mode=enums.ParseMode.HTML,
-                    reply_markup=to_inline_markup(
-                        [[(t("btn_cancel", lang), "addch:cancel")]]
-                    ),
+                await admin_send.reply(
+                    cq.message,
+                    admin_wizard.prompt(uid, lang),
+                    rows=[[(t("btn_cancel", lang), "addch:cancel")]],
                 )
             except Exception:
                 log.exception("failed to start add-channel wizard")
@@ -922,10 +1137,7 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
             except Exception:
                 pass
             try:
-                await cq.edit_message_text(
-                    admin_commands._truncate(t("wiz_cancelled", lang)),
-                    parse_mode=enums.ParseMode.HTML,
-                )
+                await admin_send.edit(cq, admin_wizard.cancelled(lang))
             except MessageNotModified:
                 pass
             except Exception:
@@ -952,28 +1164,9 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
             await cq.answer(result.alert or "")
         except Exception:
             log.exception("callback answer failed")
-        async def _edit(text, **kw):
-            return await cq.edit_message_text(
-                text, parse_mode=enums.ParseMode.HTML, **kw
-            )
-
-        async def _edit_rich(rich):
-            # `text` stays positional (it is required); `rich_message` supersedes
-            # it, and parse_mode is omitted — the rich dialect carries its own.
-            return await cq.edit_message_text(
-                admin_commands._truncate(result.text), rich_message=rich
-            )
 
         try:
-            if result.rows:
-                await send_with_markup(
-                    _edit,
-                    admin_commands._truncate(result.text),
-                    result.rows,
-                    send_rich=_edit_rich if HAS_RICH_MESSAGES else None,
-                )
-            else:
-                await _edit(admin_commands._truncate(result.text), reply_markup=None)
+            await admin_send.edit(cq, result.text, rows=result.rows)
         except MessageNotModified:
             pass  # re-tapping a nav button that shows identical content
         except Exception:
@@ -984,9 +1177,9 @@ def register_callback_handler(pyro, *, start_ts=None, query_queue=None):
         if data.startswith("setlang:"):
             new_lang = admin_prefs.get_lang(uid) if uid is not None else lang
             try:
-                await cq.message.reply_text(
-                    t("lang_switched", new_lang),
-                    parse_mode=enums.ParseMode.HTML,
+                await admin_send.reply(
+                    cq.message,
+                    admin_commands._ok(t("ok_lang", new_lang)),
                     reply_markup=to_reply_markup(build_reply_keyboard(new_lang), new_lang),
                 )
             except Exception:

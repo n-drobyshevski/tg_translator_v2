@@ -12,32 +12,56 @@ Writable settings are persisted to the shared root ``.env`` via
 filter reads channels live, and ``/setprompt`` calls ``reload_prompt_template``.
 No secrets are editable from the DM.
 
+Every reply is a rich message (Bot API 10.3) built from
+:mod:`translator.services.rich_html` blocks: the ``_cmd_*`` helpers return a
+:class:`~translator.services.rich_html.RichText` — a ``str`` of the classic-HTML
+fallback that also carries the rich rendering — and everything is sent through
+:mod:`translator.services.admin_send`.
+
 The dispatch entry point ``handle_command`` is intentionally free of Pyrogram
 plumbing so it can be unit-tested with a fake message object.
 """
 
 from __future__ import annotations
 
-import html
+import asyncio
 import logging
 import os
 import re
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
-from pyrogram import enums, filters
+from pyrogram import filters
 
 from translator.config import CONFIG, LOG_FILE_PATH, PROMPT_TEMPLATE_PATH
 from translator.services import (
     admin_i18n,
     admin_prefs,
+    admin_send,
     admin_store,
     admin_wizard,
     env_store,
+    rich_html,
 )
 from translator.services.admin_i18n import t
+from translator.services.rich_html import (
+    KV,
+    Bullets,
+    Details,
+    Doc,
+    Footer,
+    Heading,
+    Note,
+    Para,
+    Pre,
+    RichText,
+    Setting,
+    Status,
+    Table,
+    esc,
+)
 from translator.utils.error_format import humanize_text
 from translator.utils.model_capabilities import supports_effort, supports_sampling_params
 from translator.utils.prompt_validation import validate_prompt
@@ -55,10 +79,15 @@ _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 # low→high so the menu and the error message agree on presentation order.
 _VALID_EFFORTS = ("low", "medium", "high")
 
-_REPLY_LIMIT = 4000  # stay under Telegram's 4096 hard cap
+_REPLY_LIMIT = rich_html.CLASSIC_LIMIT  # stay under Telegram's 4096 hard cap
+
+# /logs reads this many lines for the rich message; the classic fallback shows
+# the newest ``lines`` (30 by default) of them.
+_RICH_LOG_LINES = 150
 
 
 def _truncate(text: str, limit: int = _REPLY_LIMIT) -> str:
+    # Returns ``text`` itself when it fits, so a RichText keeps its rich half.
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
@@ -82,26 +111,138 @@ def _persist_and_reload(key: str, value: str) -> None:
     CONFIG.reload()
 
 
-def _fmt_uptime(start_ts: Optional[float]) -> str:
+# --- Reply building blocks ----------------------------------------------------
+
+
+def _ok(title_html: str, *blocks) -> RichText:
+    return Doc(Status(True, title_html), *blocks).render()
+
+
+def _err(title_html: str, *blocks) -> RichText:
+    return Doc(Status(False, title_html), *blocks).render()
+
+
+def _usage(syntax_html: str, lang: str = "en") -> RichText:
+    """``❌ Usage`` + the command syntax (technical, so not translated)."""
+    return _err(t("err_usage", lang), Para(f"<code>{syntax_html}</code>"))
+
+
+def _outcome(ok: bool, message: str) -> RichText:
+    """A ✅/❌ line for a plain-text result message (e.g. from admin_store)."""
+    return Doc(Status(ok, esc(message))).render()
+
+
+def _now_hm() -> str:
+    return datetime.now(timezone.utc).strftime("%H:%M")
+
+
+def _on_off(flag: bool, lang: str = "en") -> str:
+    return t("val_on" if flag else "val_off", lang)
+
+
+def _rich_active() -> bool:
+    """Rich messages supported by this kurigram *and* switched on in the env."""
+    from translator.services import admin_menu  # lazy: avoid import cycle
+
+    return admin_menu.HAS_RICH_MESSAGES and rich_html.rich_env_enabled()
+
+
+def compose(content, *, before: Sequence = (), after: Sequence = ()) -> RichText:
+    """Wrap an existing reply with extra blocks, keeping its rich rendering.
+
+    ``content + "…"`` would silently drop ``.rich``; this rebuilds the doc
+    instead. A legacy plain ``str`` is kept as one paragraph.
+    """
+    c = rich_html.as_content(content)
+    if not before and not after:
+        return c
+    doc = Doc(*before)
+    if c.doc is not None:
+        doc.extend(c.doc)
+    else:
+        doc.add(Para(str(c)))
+    doc.add(*after)
+    return doc.render()
+
+
+def _fmt_uptime(start_ts: Optional[float], lang: str = "en") -> str:
     if start_ts is None:
-        return "unknown"
+        return t("val_unknown", lang)
     secs = int(time.monotonic() - start_ts)
     h, rem = divmod(secs, 3600)
     m, s = divmod(rem, 60)
     return f"{h}h {m}m {s}s"
 
 
-def _cmd_help(lang: str = "en") -> str:
-    return t("help_text", lang)
+# --- /help & /menu ------------------------------------------------------------
+
+# /help groups every published command. Kept next to COMMAND_SPECS' consumers
+# (a test asserts each spec lands in exactly one group) so a new command can't
+# be published without also being documented.
+COMMAND_GROUPS = (
+    ("grp_monitoring", ("status", "stats", "logs")),
+    ("grp_ai", ("setmodel", "seteffort", "setmaxtokens", "settemp", "prompt", "setprompt")),
+    ("grp_channels", ("channels", "addchannel", "editchannel", "removechannel")),
+    ("grp_admins", ("admins", "addadmin", "removeadmin")),
+    (
+        "grp_system",
+        ("menu", "setlang", "setrich", "richcheck", "setloglevel", "reload", "cancel", "help"),
+    ),
+)
 
 
-def _recent_events(lang: str = "en", lookback_days: int = 7, limit: int = 6) -> str:
-    """The latest relay events (success or failure) as a '/status' section.
+def _surface_bullets(lang: str) -> Bullets:
+    return Bullets(
+        [t("txt_help_status", lang), t("txt_help_ai", lang), t("txt_help_settings", lang)]
+    )
 
-    Replaces the old split successes/failures blocks: operators usually just want
-    a quick "what happened last" feed where each line carries its own ✅/❌ status.
-    Pull-based; no push alerts. Returns a leading-blank-line block, or "" if the
-    event store can't be read — /status must never break on a DB hiccup.
+
+def _help_doc(lang: str = "en") -> Doc:
+    descs = dict(COMMAND_SPECS)
+    doc = Doc(
+        Heading(t("h_help", lang)),
+        Para(t("txt_help_intro", lang)),
+        _surface_bullets(lang),
+        Heading(t("h_commands", lang), 4),
+    )
+    for group_key, names in COMMAND_GROUPS:
+        rows = [[f"<code>/{n}</code>", t(descs[n], lang)] for n in names if n in descs]
+        doc.add(
+            Details(
+                t(group_key, lang),
+                Table(
+                    [t("col_command", lang), t("col_description", lang)],
+                    rows,
+                    classic_row=lambda r: f"{r[0]} — {r[1]}",
+                ),
+            )
+        )
+    return doc.add(Footer(t("hint_help", lang)))
+
+
+def _cmd_help(lang: str = "en") -> RichText:
+    return _help_doc(lang).render()
+
+
+def menu_greeting(lang: str = "en") -> RichText:
+    """The /menu and /start reply (sent with the persistent reply keyboard)."""
+    return Doc(
+        Heading(t("h_menu", lang)),
+        Para(t("txt_menu_intro", lang)),
+        _surface_bullets(lang),
+        Footer(t("hint_menu_typed", lang)),
+    ).render()
+
+
+# --- /status & /stats ---------------------------------------------------------
+
+
+def _recent_events(lang: str = "en", lookback_days: int = 7, limit: int = 6) -> list:
+    """The latest relay events (success or failure) as '/status' blocks.
+
+    One feed where each row carries its own ✅/❌, since operators usually just
+    want "what happened last". Pull-based; no push alerts. Returns no blocks if
+    the event store can't be read — /status must never break on a DB hiccup.
     """
     try:
         from translator.db import events_dao
@@ -109,109 +250,173 @@ def _recent_events(lang: str = "en", lookback_days: int = 7, limit: int = 6) -> 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
         msgs = events_dao.load_messages(since_iso=cutoff)
     except Exception:  # pragma: no cover - defensive
-        return ""
+        return []
     if not msgs:
-        return "\n\n" + t("status_events_none", lang)
-    lines = [t("status_events_header", lang, count=len(msgs))]
+        return [Heading(t("h_events_none", lang), 4), Para(t("txt_events_none", lang))]
+    rows = []
     for m in reversed(msgs[-limit:]):  # newest first (load_messages is oldest-first)
         ts = (m.get("timestamp") or "")[5:16].replace("T", " ")  # MM-DD HH:MM (UTC)
-        chan = html.escape(str(m.get("source_channel_name") or "?"))
+        chan = esc(m.get("source_channel_name") or "?")
         if m.get("posting_success"):
-            media = html.escape(str(m.get("media_type") or "text"))
-            lines.append(t("status_event_ok", lang, time=ts, channel=chan, media=media))
+            rows.append(["✅", ts, chan, esc(m.get("media_type") or "text")])
         else:
             # humanize_text cleans up legacy events whose exception_message is a raw
             # SDK dump; it is idempotent on already-humanized (new) events.
-            reason = html.escape(humanize_text(str(m.get("exception_message") or ""))[:90])
-            lines.append(t("status_event_fail", lang, time=ts, channel=chan, reason=reason))
-    return "\n\n" + "\n".join(lines)
+            reason = humanize_text(str(m.get("exception_message") or ""))[:160]
+            rows.append(["❌", ts, chan, esc(reason)])
+    return [
+        Heading(t("h_events", lang, count=len(msgs)), 4),
+        Table(
+            ["", t("col_time", lang), t("col_channel", lang), t("col_detail", lang)],
+            rows,
+            classic_row=lambda r: f"{r[0]} {r[1]} UTC · {r[2]} · {r[3]}",
+        ),
+    ]
 
 
-def _cmd_status(start_ts, query_queue, pyro, lang: str = "en") -> str:
+def _cmd_status(start_ts, query_queue, pyro, lang: str = "en") -> RichText:
     # query_queue is retained in the signature for call-site stability; the queue
     # depth is no longer surfaced in /status.
     connected = getattr(pyro, "is_connected", None)
-    status = t(
-        "status",
-        lang,
-        uptime=_fmt_uptime(start_ts),
-        connected=connected,
-        model=html.escape(str(CONFIG.ANTHROPIC_MODEL)),
-    )
-    return status + _recent_events(lang)
+    if connected is None:
+        conn = t("val_unknown", lang)
+    else:
+        conn = ("✅ " + t("val_yes", lang)) if connected else ("❌ " + t("val_no", lang))
+    return Doc(
+        Heading(t("h_status", lang)),
+        KV(
+            [
+                (t("lbl_uptime", lang), _fmt_uptime(start_ts, lang)),
+                (t("lbl_connected", lang), conn),
+                (t("lbl_model", lang), f"<code>{esc(CONFIG.ANTHROPIC_MODEL)}</code>"),
+                (t("lbl_rich", lang), _on_off(_rich_active(), lang)),
+            ]
+        ),
+        *_recent_events(lang),
+        Footer(t("hint_status", lang, time=_now_hm())),
+    ).render()
 
 
-def _cmd_stats(args: List[str], lang: str = "en") -> str:
+def _pct(part: int, whole: int) -> str:
+    return f"{part / whole * 100:.0f}%" if whole else "—"
+
+
+def _cmd_stats(args: List[str], lang: str = "en") -> RichText:
     days = 7
     if args:
         try:
             days = int(args[0])
         except ValueError:
-            return t("stats_usage", lang)
+            return _usage("/stats [days]", lang)
         if not 1 <= days <= 30:
-            return t("stats_days_range", lang)
+            return _err(t("err_stats_days", lang))
     try:
         from translator.db import events_dao
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         messages = events_dao.load_messages(since_iso=cutoff)
     except Exception as exc:  # pragma: no cover - defensive
-        return t("stats_unavailable", lang, err=html.escape(str(exc)))
+        return _err(t("err_stats_unavailable", lang), Para(esc(exc)))
 
     total = len(messages)
     failures = sum(1 for m in messages if not m.get("posting_success"))
     by_channel = Counter(m.get("source_channel_name") or "?" for m in messages)
-    lines = [t("stats_header", lang, days=days, total=total, failures=failures)]
-    if by_channel:
-        lines += [
-            f"{html.escape(str(name))}: {count}"
-            for name, count in by_channel.most_common()
-        ]
-    else:
-        lines.append(t("common_none", lang))
-    return "\n".join(lines)
+    failed_by = Counter(
+        m.get("source_channel_name") or "?" for m in messages if not m.get("posting_success")
+    )
+    rows = [
+        [esc(name), str(count), str(failed_by[name]), _pct(count, total)]
+        for name, count in by_channel.most_common()
+    ]
+    return Doc(
+        Heading(t("h_stats", lang, days=days)),
+        KV(
+            [
+                (t("lbl_relayed", lang), total),
+                (t("lbl_failures", lang), failures),
+                (t("lbl_success_rate", lang), _pct(total - failures, total)),
+            ]
+        ),
+        Heading(t("h_by_channel", lang), 4),
+        Table(
+            [t("col_channel", lang), t("col_posts", lang), t("col_failures", lang), t("col_share", lang)],
+            rows,
+            classic_row=lambda r: f"{r[0]}: {r[1]}",
+            empty=t("common_none", lang),
+        ),
+        Footer(t("hint_stats", lang)),
+    ).render()
 
 
-def _config_summary(lang: str = "en") -> str:
-    """Current non-secret settings as value lines (no header).
+# --- Settings summary, channels, prompt, logs --------------------------------
+
+
+def _config_pairs(lang: str = "en") -> list:
+    """Current non-secret settings as (label, value) rows for the Settings menu.
 
     Rendered inside the Settings menu (see :mod:`translator.services.admin_menu`),
-    which supplies its own ``⚙️ Settings`` title. Labels mirror the submenu wording.
+    which supplies its own ``⚙️ Settings`` heading. Labels mirror the submenus.
     """
     d = CONFIG.as_dict()
     # Show admins by name (manual label → resolved @username → raw id fallback),
     # reusing the same best-effort resolution as /admins.
-    admins = ", ".join(
-        html.escape(a["display"]) for a in admin_store.list_admins()
-    ) or t("common_none", lang)
-    return t(
-        "cfg_summary",
-        lang,
-        log=html.escape(str(d["LOG_LEVEL"])),
-        admins=admins,
-        channels=html.escape(", ".join(d["LOGICAL_CHANNELS"])),
+    admins = ", ".join(esc(a["display"]) for a in admin_store.list_admins()) or t(
+        "common_none", lang
     )
+    return [
+        (t("lbl_log_level", lang), esc(d["LOG_LEVEL"])),
+        (t("lbl_admins", lang), admins),
+        (t("lbl_channels", lang), esc(", ".join(d["LOGICAL_CHANNELS"]))),
+        (t("lbl_rich", lang), _on_off(_rich_active(), lang)),
+    ]
 
 
-def _cmd_channels(lang: str = "en") -> str:
-    lines = [t("channels_title", lang)]
+def _channel_rows() -> List[List[str]]:
+    rows = []
     for name in _logical_names():
         src = CONFIG.channels[name]
         dst = CONFIG.channels.get(name + "_en")
-        dst_id = dst.channel_id if dst else "—"
-        lines.append(
-            t("channels_line", lang, name=html.escape(name), src=src.channel_id, dst=dst_id)
-        )
-    if len(lines) == 1:
-        lines.append(t("common_none", lang))
-    return "\n".join(lines)
+        rows.append([esc(name), str(src.channel_id), str(dst.channel_id if dst else "—")])
+    return rows
 
 
-def _cmd_prompt(lang: str = "en") -> str:
+def _channels_doc(lang: str = "en") -> Doc:
+    return Doc(
+        Heading(t("h_channels", lang)),
+        Table(
+            [t("col_name", lang), t("col_source", lang), t("col_destination", lang)],
+            _channel_rows(),
+            classic_row=lambda r: t("channels_line", lang, name=r[0], src=r[1], dst=r[2]),
+            empty=t("common_none", lang),
+        ),
+    )
+
+
+def _cmd_channels(lang: str = "en") -> RichText:
+    return _channels_doc(lang).render()
+
+
+def _prompt_doc(lang: str = "en") -> Doc:
+    doc = Doc(Heading(t("h_prompt", lang)))
     if not PROMPT_TEMPLATE_PATH.exists():
-        return t("prompt_none", lang)
+        return doc.add(Para(t("txt_prompt_none", lang)))
     text = PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
-    return t("prompt_body", lang, body=html.escape(_truncate(text, 3500)))
+    return doc.add(
+        KV(
+            [
+                (t("lbl_chars", lang), len(text)),
+                (t("lbl_lines", lang), len(text.splitlines())),
+            ]
+        ),
+        # The whole template fits a rich message; the classic fallback is cut
+        # (keeping the start) to whatever the heading and footer leave.
+        Pre(text, keep="head"),
+        Footer(t("hint_setprompt", lang)),
+    )
+
+
+def _cmd_prompt(lang: str = "en") -> RichText:
+    return _prompt_doc(lang).render()
 
 
 def _tail_lines(path: str, n: int, *, max_bytes: int = 64_000) -> str:
@@ -232,62 +437,78 @@ def _tail_lines(path: str, n: int, *, max_bytes: int = 64_000) -> str:
     return "\n".join(text.splitlines()[-n:])
 
 
-def _cmd_logs(lang: str = "en", *, lines: int = 30) -> str:
-    """Most recent ``bot.log`` tail (newest at the bottom), HTML-escaped."""
+def _logs_doc(lang: str = "en", *, lines: int = 30) -> Doc:
+    """Most recent ``bot.log`` tail (newest at the bottom).
+
+    The rich message shows up to ``_RICH_LOG_LINES``; the classic fallback the
+    newest ``lines``. Truncation keeps the *tail* — the newest lines are what an
+    operator opens this for.
+    """
+    doc = Doc(Heading(t("h_logs", lang)))
     if not os.path.exists(LOG_FILE_PATH):
-        return t("logs_none", lang)
+        return doc.add(Para(t("txt_logs_none", lang)))
     try:
-        tail = _tail_lines(LOG_FILE_PATH, lines)
+        tail = _tail_lines(LOG_FILE_PATH, max(lines, _RICH_LOG_LINES))
     except OSError as exc:  # pragma: no cover - defensive
-        return t("logs_error", lang, err=html.escape(str(exc)))
+        return Doc(Status(False, t("err_logs_read", lang)), Para(esc(exc)))
     if not tail.strip():
-        return t("logs_empty", lang)
-    return t("logs_body", lang, body=html.escape(_truncate(tail, 3500)))
+        return doc.add(Para(t("txt_logs_empty", lang)))
+    return doc.add(
+        Pre(tail, keep="tail", classic_max_lines=lines),
+        Footer(t("hint_logs", lang, time=_now_hm())),
+    )
 
 
-def _cmd_setmodel(args: List[str], lang: str = "en") -> str:
+def _cmd_logs(lang: str = "en", *, lines: int = 30) -> RichText:
+    return _logs_doc(lang, lines=lines).render()
+
+
+# --- Writable settings --------------------------------------------------------
+
+
+def _cmd_setmodel(args: List[str], lang: str = "en") -> RichText:
     if len(args) != 1 or not args[0].strip():
-        return t("setmodel_usage", lang)
+        return _usage("/setmodel &lt;model&gt;", lang)
     model = args[0].strip()
     _persist_and_reload("ANTHROPIC_MODEL", model)
-    return t("setmodel_ok", lang, model=html.escape(model))
+    return _ok(t("ok_model", lang), Setting("ANTHROPIC_MODEL", esc(model)))
 
 
-def _cmd_settemp(args: List[str], lang: str = "en") -> str:
+def _cmd_settemp(args: List[str], lang: str = "en") -> RichText:
     if len(args) != 1:
-        return t("settemp_usage", lang)
+        return _usage("/settemp &lt;0..1&gt;", lang)
     try:
         val = float(args[0])
     except ValueError:
-        return t("settemp_nan", lang)
+        return _err(t("err_temp_nan", lang))
     if not 0.0 <= val <= 1.0:
-        return t("settemp_range", lang)
+        return _err(t("err_temp_range", lang))
     _persist_and_reload("ANTHROPIC_TEMPERATURE", str(val))
-    reply = t("settemp_ok", lang, val=val)
     # Saving is still correct (it applies if the model is switched back), but
     # say so rather than let the operator think they changed something.
+    note = None
     if not supports_sampling_params(CONFIG.ANTHROPIC_MODEL):
-        reply += t("settemp_ignored", lang, model=html.escape(CONFIG.ANTHROPIC_MODEL))
-    return reply
+        note = Note(t("txt_temp_ignored", lang, model=esc(CONFIG.ANTHROPIC_MODEL)))
+    return _ok(t("ok_temp", lang), Setting("ANTHROPIC_TEMPERATURE", val), note)
 
 
-def _cmd_setmaxtokens(args: List[str], lang: str = "en") -> str:
+def _cmd_setmaxtokens(args: List[str], lang: str = "en") -> RichText:
     if len(args) != 1:
-        return t("settokens_usage", lang)
+        return _usage("/setmaxtokens &lt;1..128000&gt;", lang)
     try:
         val = int(args[0])
     except ValueError:
-        return t("settokens_nan", lang)
+        return _err(t("err_tokens_nan", lang))
     # Ceiling raised from 8192 alongside the Sonnet 5 default: max_tokens now
     # covers thinking + response together, and the default itself is 8000, which
     # left almost no headroom. 128000 is the current models' real output cap.
     if not 1 <= val <= 128000:
-        return t("settokens_range", lang)
+        return _err(t("err_tokens_range", lang))
     _persist_and_reload("ANTHROPIC_MAX_TOKENS", str(val))
-    return t("settokens_ok", lang, val=val)
+    return _ok(t("ok_tokens", lang), Setting("ANTHROPIC_MAX_TOKENS", val))
 
 
-def _cmd_seteffort(args: List[str], lang: str = "en") -> str:
+def _cmd_seteffort(args: List[str], lang: str = "en") -> RichText:
     """Set ``ANTHROPIC_EFFORT`` — thinking depth on the Opus 4.7+ surface.
 
     The modern counterpart to /settemp: each request surface takes one of the two
@@ -295,23 +516,25 @@ def _cmd_seteffort(args: List[str], lang: str = "en") -> str:
     active model won't use it.
     """
     if len(args) != 1:
-        return t("seteffort_usage", lang)
+        return _usage("/seteffort &lt;low|medium|high&gt;", lang)
     val = args[0].strip().lower()
     if val not in _VALID_EFFORTS:
-        return t("seteffort_invalid", lang, levels=", ".join(_VALID_EFFORTS))
+        return _err(t("err_effort_invalid", lang, levels=", ".join(_VALID_EFFORTS)))
     _persist_and_reload("ANTHROPIC_EFFORT", val)
-    reply = t("seteffort_ok", lang, val=val)
+    note = None
     if not supports_effort(CONFIG.ANTHROPIC_MODEL):
-        reply += t("seteffort_ignored", lang, model=html.escape(CONFIG.ANTHROPIC_MODEL))
-    return reply
+        note = Note(t("txt_effort_ignored", lang, model=esc(CONFIG.ANTHROPIC_MODEL)))
+    return _ok(t("ok_effort", lang), Setting("ANTHROPIC_EFFORT", val), note)
 
 
-def _cmd_setloglevel(args: List[str], lang: str = "en") -> str:
+def _cmd_setloglevel(args: List[str], lang: str = "en") -> RichText:
     if len(args) != 1:
-        return t("setlog_usage", lang)
+        return _usage("/setloglevel &lt;LEVEL&gt;", lang)
     level_name = args[0].strip().upper()
     if level_name not in _VALID_LOG_LEVELS:
-        return t("setlog_invalid", lang, levels=", ".join(sorted(_VALID_LOG_LEVELS)))
+        return _err(
+            t("err_log_invalid", lang, levels=", ".join(sorted(_VALID_LOG_LEVELS)))
+        )
     _persist_and_reload("LOG_LEVEL", level_name)
     # Apply to the running process too.
     level = getattr(logging, level_name)
@@ -319,10 +542,37 @@ def _cmd_setloglevel(args: List[str], lang: str = "en") -> str:
     root.setLevel(level)
     for h in root.handlers:
         h.setLevel(level)
-    return t("setlog_ok", lang, level=level_name)
+    return _ok(
+        t("ok_log", lang), Setting("LOG_LEVEL", level_name), Para(t("txt_applied_live", lang))
+    )
 
 
-def _cmd_setprompt(msg, lang: str = "en") -> str:
+def _cmd_setrich(args: List[str], lang: str = "en") -> RichText:
+    """``/setrich on|off`` — the live kill switch for rich admin messages.
+
+    Persisted like every other setting, so it survives a restart and applies to
+    the very next reply (this one included when switching on).
+    """
+    from translator.services import admin_menu  # lazy: avoid import cycle
+
+    value = args[0].strip().lower() if len(args) == 1 else ""
+    if value not in ("on", "off"):
+        return _usage("/setrich &lt;on|off&gt;", lang)
+    on = value == "on"
+    _persist_and_reload(rich_html.RICH_ENV, "1" if on else "0")
+    if on:
+        admin_menu._breaker.reset()  # an explicit "on" deserves a fresh try
+    doc = Doc(
+        Status(True, t("ok_rich", lang, state=_on_off(on, lang))),
+        Setting(rich_html.RICH_ENV, "1" if on else "0"),
+        Para(t("txt_rich_on" if on else "txt_rich_off", lang)),
+    )
+    if on and not admin_menu.HAS_RICH_MESSAGES:
+        doc.add(Note(t("txt_rich_unsupported", lang)))
+    return doc.render()
+
+
+def _cmd_setprompt(msg, lang: str = "en") -> RichText:
     new_prompt = None
     reply = getattr(msg, "reply_to_message", None)
     if reply is not None and getattr(reply, "text", None):
@@ -330,10 +580,10 @@ def _cmd_setprompt(msg, lang: str = "en") -> str:
     elif msg.text and "\n" in msg.text:
         new_prompt = msg.text.split("\n", 1)[1]
     if new_prompt is None:
-        return t("setprompt_usage", lang)
+        return _err(t("err_setprompt", lang), Para(t("txt_setprompt_how", lang)))
     err = validate_prompt(new_prompt)
     if err:
-        return t("setprompt_invalid", lang, err=html.escape(err))
+        return _err(t("err_prompt_invalid", lang), Para(esc(err)))
     # One-step rollback, mirroring the Flask admin app.
     if PROMPT_TEMPLATE_PATH.exists():
         backup = PROMPT_TEMPLATE_PATH.with_suffix(PROMPT_TEMPLATE_PATH.suffix + ".bak")
@@ -342,31 +592,46 @@ def _cmd_setprompt(msg, lang: str = "en") -> str:
         )
     PROMPT_TEMPLATE_PATH.write_text(new_prompt, encoding="utf-8")
     reload_prompt_template()
-    return t("setprompt_ok", lang)
+    return _ok(t("ok_prompt", lang), Para(t("txt_prompt_reloaded", lang)))
 
 
-def _reload_or_error(action: str, lang: str = "en") -> Optional[str]:
-    """Run CONFIG.reload(); return an error string on failure, else None."""
+def _reload_or_error(action: str, lang: str = "en") -> Optional[RichText]:
+    """Run CONFIG.reload(); return an error reply on failure, else None."""
     try:
         CONFIG.reload()
         return None
     except Exception as exc:
-        return t("reload_failed", lang, action=action, err=html.escape(str(exc)))
+        return _err(t("err_reload", lang, action=action), Para(esc(exc)))
 
 
-def _cmd_addchannel(args: List[str], lang: str = "en") -> str:
+# --- Channels -----------------------------------------------------------------
+
+
+def _pair_kv(src, dst, lang: str) -> KV:
+    return KV(
+        [
+            (t("lbl_source", lang), f"<code>{esc(src)}</code>"),
+            (t("lbl_destination", lang), f"<code>{esc(dst)}</code>"),
+        ]
+    )
+
+
+def _cmd_addchannel(args: List[str], lang: str = "en") -> RichText:
     if len(args) < 3:
-        return t("addch_usage", lang)
+        return _usage(
+            "/addchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt; [src_name] [dst_name]",
+            lang,
+        )
     name = args[0].strip().lower()
     if not _NAME_RE.fullmatch(name):
-        return t("addch_bad_name", lang)
+        return _err(t("err_addch_name", lang))
     if name in _logical_names():
-        return t("addch_dup", lang, name=html.escape(name))
+        return _err(t("err_addch_dup", lang, name=esc(name)))
     try:
         src_id = int(args[1])
         dst_id = int(args[2])
     except ValueError:
-        return t("addch_bad_int", lang)
+        return _err(t("err_addch_int", lang))
 
     up = name.upper()
     # Write leaf vars first; append the name to LOGICAL_CHANNELS LAST so a
@@ -383,37 +648,41 @@ def _cmd_addchannel(args: List[str], lang: str = "en") -> str:
     err = _reload_or_error("add", lang)
     if err:
         return err
-    return t("addch_ok", lang, name=html.escape(name), src=src_id, dst=dst_id)
+    return _ok(
+        t("ok_addch", lang, name=esc(name)),
+        _pair_kv(src_id, dst_id, lang),
+        Note(t("txt_addch_member", lang)),
+    )
 
 
-def _cmd_editchannel(args: List[str], lang: str = "en") -> str:
+def _cmd_editchannel(args: List[str], lang: str = "en") -> RichText:
     if len(args) != 3:
-        return t("editch_usage", lang)
+        return _usage("/editchannel &lt;name&gt; &lt;src_id&gt; &lt;dst_id&gt;", lang)
     name = args[0].strip().lower()
     if name not in _logical_names():
-        return t("editch_unknown", lang, name=html.escape(name))
+        return _err(t("err_unknown_channel", lang, name=esc(name)))
     try:
         src_id = int(args[1])
         dst_id = int(args[2])
     except ValueError:
-        return t("addch_bad_int", lang)
+        return _err(t("err_addch_int", lang))
     up = name.upper()
     env_store.set_env_var(f"{up}_CHANNEL", str(src_id))
     env_store.set_env_var(f"{up}_EN_CHANNEL_ID", str(dst_id))
     err = _reload_or_error("edit", lang)
     if err:
         return err
-    return t("editch_ok", lang, name=html.escape(name), src=src_id, dst=dst_id)
+    return _ok(t("ok_editch", lang, name=esc(name)), _pair_kv(src_id, dst_id, lang))
 
 
-def _cmd_removechannel(args: List[str], lang: str = "en") -> str:
+def _cmd_removechannel(args: List[str], lang: str = "en") -> RichText:
     if len(args) != 1:
-        return t("rmch_usage", lang)
+        return _usage("/removechannel &lt;name&gt;", lang)
     name = args[0].strip().lower()
     if name in _PROTECTED_CHANNELS:
-        return t("rmch_protected", lang, name=html.escape(name))
+        return _err(t("err_protected", lang, name=esc(name)))
     if name not in _logical_names():
-        return t("editch_unknown", lang, name=html.escape(name))
+        return _err(t("err_unknown_channel", lang, name=esc(name)))
     # Drop from LOGICAL_CHANNELS first so reload() no longer requires its vars,
     # then clean up the leaf vars.
     new_names = [n for n in _logical_names() if n != name]
@@ -424,27 +693,33 @@ def _cmd_removechannel(args: List[str], lang: str = "en") -> str:
     err = _reload_or_error("remove", lang)
     if err:
         return err
-    return t("rmch_ok", lang, name=html.escape(name))
+    return _ok(t("ok_rmch", lang, name=esc(name)))
 
 
-def _cmd_admins(lang: str = "en") -> str:
-    lines = [t("admins_title", lang)]
-    admins = admin_store.list_admins()
+# --- Admins -------------------------------------------------------------------
+
+
+def admins_table(admins, lang: str = "en") -> Table:
+    """The admin list as a Name / ID table (classic: ``Name (<code>id</code>)``)."""
+    rows = []
     for a in admins:
-        if a["label"]:
-            lines.append(f"{html.escape(a['label'])} (<code>{a['id']}</code>)")
-        elif a["resolved"]:
-            lines.append(f"{html.escape(a['resolved'])} (<code>{a['id']}</code>)")
-        else:
-            lines.append(f"<code>{a['id']}</code>")
-    if len(lines) == 1:
-        lines.append(t("common_none", lang))
-    lines += [
-        "",
-        t("admins_help", lang),
-        t("admins_note", lang),
-    ]
-    return "\n".join(lines)
+        name = a["label"] or a["resolved"] or ""
+        rows.append([esc(name), f"<code>{esc(a['id'])}</code>"])
+    return Table(
+        [t("col_name", lang), t("col_id", lang)],
+        rows,
+        classic_row=lambda r: f"{r[0]} ({r[1]})" if r[0] else r[1],
+        empty=t("common_none", lang),
+    )
+
+
+def _cmd_admins(lang: str = "en") -> RichText:
+    return Doc(
+        Heading(t("h_admins", lang)),
+        admins_table(admin_store.list_admins(), lang),
+        Para(t("hint_admins_cmds", lang)),
+        Footer("ℹ️ " + t("txt_admins_note", lang)),
+    ).render()
 
 
 def _derive_label(user) -> Optional[str]:
@@ -458,78 +733,156 @@ def _derive_label(user) -> Optional[str]:
     return name or (f"@{uname}" if uname else None)
 
 
-def _add_shared_users(users) -> str:
+def _add_shared_users(users, lang: str = "en") -> RichText:
     """Add admins picked via the request_users keyboard (a list of User-likes)."""
     if not users:
-        return "❌ No user received from the picker."
-    lines: List[str] = []
+        return _err(t("err_no_user_picked", lang))
+    doc = Doc()
     for u in users:
         uid = getattr(u, "id", None)
         if uid is None:
             continue
         ok, msg = admin_store.add_admin(str(uid), _derive_label(u))
-        lines.append(("✅ " if ok else "❌ ") + html.escape(msg))
-    return "\n".join(lines) if lines else "❌ No valid user received."
+        doc.add(Status(ok, esc(msg)))
+    if not doc.blocks:
+        return _err(t("err_no_valid_user", lang))
+    return doc.render()
 
 
-async def _cmd_addadmin(args: List[str], pyro=None) -> str:
+async def _cmd_addadmin(args: List[str], pyro=None, lang: str = "en") -> RichText:
     if not args:
-        return "❌ Usage: /addadmin &lt;user_id|@username&gt; [label]"
+        return _usage("/addadmin &lt;user_id|@username&gt; [label]", lang)
     target = args[0].strip()
     label = " ".join(args[1:]).strip() or None
 
     # Numeric id (incl. negative) → add directly.
     if target and target != "-" and target.lstrip("-").isdigit():
-        ok, msg = admin_store.add_admin(target, label)
-        return ("✅ " if ok else "❌ ") + html.escape(msg)
+        return _outcome(*admin_store.add_admin(target, label))
 
     # Otherwise treat it as a username, resolved best-effort via the live client.
     if pyro is None:
-        return "❌ Username lookup unavailable here — use a numeric user id."
+        return _err(t("err_username_lookup", lang))
     uname = target.lstrip("@")
     try:
         user = await pyro.get_users(uname)
     except Exception as exc:
-        return (
-            f"❌ Couldn't resolve {html.escape(target)} ({html.escape(str(exc))}). "
-            "The bot can only resolve users/usernames it can see."
+        return _err(
+            t("err_resolve", lang, target=esc(target)),
+            Para(esc(exc)),
+            Para(t("txt_resolve_hint", lang)),
         )
     uid = getattr(user, "id", None)
     if uid is None:
-        return f"❌ Couldn't resolve {html.escape(target)}."
-    ok, msg = admin_store.add_admin(str(uid), label or _derive_label(user))
-    return ("✅ " if ok else "❌ ") + html.escape(msg)
+        return _err(t("err_resolve", lang, target=esc(target)))
+    return _outcome(*admin_store.add_admin(str(uid), label or _derive_label(user)))
 
 
-def _cmd_removeadmin(args: List[str]) -> str:
+def _cmd_removeadmin(args: List[str], lang: str = "en") -> RichText:
     if len(args) != 1:
-        return "❌ Usage: /removeadmin &lt;user_id&gt;"
-    ok, msg = admin_store.remove_admin(args[0])
-    return ("✅ " if ok else "❌ ") + html.escape(msg)
+        return _usage("/removeadmin &lt;user_id&gt;", lang)
+    return _outcome(*admin_store.remove_admin(args[0]))
 
 
-def _cmd_reload(lang: str = "en") -> str:
+# --- System -------------------------------------------------------------------
+
+
+def _refresh_rich_env() -> None:
+    """Copy the rich-message switches from ``.env`` into ``os.environ``.
+
+    ``load_dotenv`` runs once at import, so ``CONFIG.reload()`` alone never sees
+    an out-of-band ``.env`` edit. /reload is where an operator expects such an
+    edit to land, and the kill switch is the one setting that has to be
+    flippable that way (e.g. if rich replies stop arriving at all). Only these
+    keys are copied, and only when present — never removed.
+    """
+    try:
+        from dotenv import dotenv_values
+
+        values = dotenv_values(env_store._root_env_path())
+    except Exception:  # pragma: no cover - defensive
+        log.warning("could not re-read .env for the rich-message switch", exc_info=True)
+        return
+    for key in (rich_html.RICH_ENV, rich_html.LEGACY_RICH_ENV):
+        value = values.get(key)
+        if value is not None:
+            os.environ[key] = value
+
+
+def _cmd_reload(lang: str = "en") -> RichText:
+    _refresh_rich_env()
     err = _reload_or_error("reload", lang)
     if err:
         return err
     reload_prompt_template()
-    return t("reload_ok", lang)
+    return _ok(t("ok_reload", lang))
 
 
-def _cmd_setlang(args: List[str], msg, lang: str = "en") -> str:
+def _cmd_setlang(args: List[str], msg, lang: str = "en") -> RichText:
     """Set the caller's per-admin menu language (text-command parity with the menu)."""
     uid = getattr(getattr(msg, "from_user", None), "id", None)
     if uid is None:
-        return t("alert_error", lang)
+        return _err(t("alert_error", lang))
     if len(args) != 1 or args[0].strip().lower() not in admin_i18n.LOCALES:
-        langs = " | ".join(admin_i18n.LOCALES)
-        return f"❌ Usage: /setlang &lt;{html.escape(langs)}&gt;"
+        return _usage("/setlang &lt;" + esc(" | ".join(admin_i18n.LOCALES)) + "&gt;", lang)
     new_lang = args[0].strip().lower()
     admin_prefs.set_lang(uid, new_lang)
-    return t("lang_switched", new_lang)
+    return _ok(t("ok_lang", new_lang))
 
 
-async def _reply_for_wizard(msg, uid, reply: str, lang: str) -> None:
+def _unknown_reply(cmd: str, lang: str = "en") -> RichText:
+    return Doc(
+        Status(None, t("err_unknown_cmd", lang)),
+        Para(f"<code>{esc(cmd)}</code>") if cmd else None,
+        Footer(t("hint_unknown", lang)),
+    ).render()
+
+
+async def _run_richcheck(client, msg, lang: str = "en") -> None:
+    """Send every ``rich_html.PROBES`` document and report which ones Telegram takes.
+
+    The rich dialect is validated only server-side, so this is the one way to
+    check it for real: each probe goes to this chat as a real rich message and
+    is deleted again. Bypasses the circuit breaker on purpose.
+    """
+    from pyrogram import types as pyro_types
+
+    from translator.services import admin_menu  # lazy: avoid import cycle
+
+    if not admin_menu.HAS_RICH_MESSAGES:
+        await admin_send.reply(
+            msg, _err(t("err_richcheck", lang), Para(t("txt_rich_unsupported", lang)))
+        )
+        return
+    chat_id = getattr(getattr(msg, "chat", None), "id", None)
+    rows = []
+    for name, probe in rich_html.PROBES:
+        try:
+            sent = await client.send_rich_message(
+                chat_id, pyro_types.InputRichMessage(html=probe)
+            )
+        except Exception as exc:
+            rows.append(["❌", f"<code>{esc(name)}</code>", esc(str(exc)[:200])])
+        else:
+            rows.append(["✅", f"<code>{esc(name)}</code>", ""])
+            if sent is not None:
+                try:
+                    await client.delete_messages(chat_id, sent.id)
+                except Exception:
+                    pass
+        await asyncio.sleep(0.3)  # stay well clear of flood limits
+    doc = Doc(
+        Heading(t("h_richcheck", lang)),
+        Table(
+            ["", t("col_feature", lang), t("col_result", lang)],
+            rows,
+            classic_row=lambda r: " ".join(c for c in r if c),
+        ),
+        Footer(t("hint_richcheck", lang)),
+    )
+    await admin_send.reply(msg, doc)
+
+
+async def _reply_for_wizard(msg, uid, reply, lang: str, *, before: Sequence = ()) -> None:
     """Send a wizard reply with the keyboard that step needs.
 
     The two id steps get Telegram's native channel picker; finishing (or
@@ -538,19 +891,20 @@ async def _reply_for_wizard(msg, uid, reply: str, lang: str) -> None:
     """
     from translator.services import admin_menu  # lazy: avoid import cycle
 
+    after = []
     step = admin_wizard.current_step(uid)
     if step in ("src", "dst"):
         markup = admin_menu.build_channel_picker_keyboard(lang)
         # No picker on this kurigram → don't advertise a button that isn't there.
         if markup is not None:
-            reply += t("wiz_pick_hint", lang)
+            after.append(Para(t("wiz_pick_hint", lang)))
     elif step is None:
         markup = admin_menu.to_reply_markup(admin_menu.build_reply_keyboard(lang), lang)
     else:
         markup = None
     try:
-        await msg.reply_text(
-            _truncate(reply), parse_mode=enums.ParseMode.HTML, reply_markup=markup
+        await admin_send.reply(
+            msg, compose(reply, before=before, after=after), reply_markup=markup
         )
     except Exception:
         log.exception("failed to send wizard reply")
@@ -565,8 +919,8 @@ async def handle_command(
     query_queue=None,
     start_ts=None,
     pyro=None,
-) -> str:
-    """Parse one admin DM and return the reply text (HTML). Never raises."""
+) -> RichText:
+    """Parse one admin DM and return the reply (a RichText). Never raises."""
     from translator.services import admin_menu  # lazy: avoid import cycle
 
     lang = _lang_of(msg)
@@ -587,7 +941,7 @@ async def handle_command(
 
     text = resolved
     if not text.startswith("/"):
-        return t("prompt_for_help", lang)
+        return Doc(Para(t("prompt_for_help", lang))).render()
     first = text.split(maxsplit=1)[0]
     cmd = first.split("@", 1)[0].lower()  # tolerate /cmd@BotName
     args = text.split()[1:]
@@ -616,10 +970,15 @@ async def handle_command(
         return _cmd_setloglevel(args, lang)
     if cmd == "/setlang":
         return _cmd_setlang(args, msg, lang)
+    if cmd == "/setrich":
+        return _cmd_setrich(args, lang)
+    if cmd == "/richcheck":
+        # Needs the live client; the Pyrogram dispatcher serves it before here.
+        return _err(t("err_richcheck", lang))
     if cmd == "/cancel":
         if uid is not None:
             admin_wizard.cancel(uid)
-        return t("wiz_cancelled", lang)
+        return admin_wizard.cancelled(lang)
     if cmd == "/setprompt":
         return _cmd_setprompt(msg, lang)
     if cmd == "/addchannel":
@@ -631,12 +990,12 @@ async def handle_command(
     if cmd == "/admins":
         return _cmd_admins(lang)
     if cmd == "/addadmin":
-        return await _cmd_addadmin(args, pyro=pyro)
+        return await _cmd_addadmin(args, pyro=pyro, lang=lang)
     if cmd == "/removeadmin":
-        return _cmd_removeadmin(args)
+        return _cmd_removeadmin(args, lang)
     if cmd == "/reload":
         return _cmd_reload(lang)
-    return t("unknown_cmd", lang, cmd=html.escape(cmd))
+    return _unknown_reply(cmd, lang)
 
 
 # --- Native command menu (setMyCommands) --------------------------------------
@@ -663,6 +1022,8 @@ COMMAND_SPECS = (
     ("setprompt", "cmd_desc_setprompt"),
     ("setloglevel", "cmd_desc_setloglevel"),
     ("setlang", "cmd_desc_setlang"),
+    ("setrich", "cmd_desc_setrich"),
+    ("richcheck", "cmd_desc_richcheck"),
     ("addchannel", "cmd_desc_addchannel"),
     ("editchannel", "cmd_desc_editchannel"),
     ("removechannel", "cmd_desc_removechannel"),
@@ -773,14 +1134,14 @@ def register_admin_handlers(
             if uid is not None:
                 admin_wizard.cancel(uid)  # picking a user leaves any wizard
             try:
-                reply = _add_shared_users(getattr(shared, "users", None) or [])
+                reply = _add_shared_users(getattr(shared, "users", None) or [], lang)
             except Exception as exc:
                 log.exception("add admin via picker failed")
-                reply = f"❌ Error: {html.escape(str(exc))}"
+                reply = _err(t("err_command", lang), Para(esc(exc)))
             try:
-                await msg.reply_text(
-                    _truncate(reply),
-                    parse_mode=enums.ParseMode.HTML,
+                await admin_send.reply(
+                    msg,
+                    reply,
                     reply_markup=admin_menu.to_reply_markup(
                         admin_menu.build_reply_keyboard(lang), lang
                     ),
@@ -803,9 +1164,9 @@ def register_admin_handlers(
                 log.info("ignoring chat_shared with no wizard pending (uid=%s)", uid)
                 return
             title = getattr(chat, "title", None) or str(chat_id)
-            reply = t("wiz_picked", lang, title=html.escape(str(title)), id=chat_id)
-            reply += admin_wizard.feed(uid, str(chat_id), lang)
-            await _reply_for_wizard(msg, uid, reply, lang)
+            picked_line = Para(t("wiz_picked", lang, title=esc(title), id=chat_id))
+            reply = admin_wizard.feed(uid, str(chat_id), lang)
+            await _reply_for_wizard(msg, uid, reply, lang, before=[picked_line])
             return
 
         text = (getattr(msg, "text", None) or "").strip()
@@ -830,9 +1191,9 @@ def register_admin_handlers(
         # text-reply path of handle_command.
         if token in ("/menu", "/start"):
             try:
-                await msg.reply_text(
-                    admin_i18n.t("menu_greeting", lang),
-                    parse_mode=enums.ParseMode.HTML,
+                await admin_send.reply(
+                    msg,
+                    menu_greeting(lang),
                     reply_markup=admin_menu.to_reply_markup(
                         admin_menu.build_reply_keyboard(lang), lang
                     ),
@@ -840,27 +1201,19 @@ def register_admin_handlers(
             except Exception:
                 log.exception("failed to send menu")
             return
+        if token == "/richcheck":
+            try:
+                await _run_richcheck(client, msg, lang)
+            except Exception:
+                log.exception("rich check failed")
+            return
         # Inline-menu entrypoints: same shape, so they share one path rather than
-        # four copies that have to be kept in step (they now all need the
-        # styled-markup fallback in send_with_markup).
+        # four copies that have to be kept in step.
         entry = _MENU_ENTRIES.get(token)
         if entry is not None:
             title, rows = entry(lang)
-
-            async def _send(body, **kw):
-                return await msg.reply_text(
-                    body, parse_mode=enums.ParseMode.HTML, **kw
-                )
-
             try:
-                await admin_menu.send_with_markup(
-                    _send,
-                    title,
-                    rows,
-                    # getattr, not msg.reply_rich: on a kurigram without rich
-                    # messages the attribute lookup itself would raise.
-                    send_rich=getattr(msg, "reply_rich", None),
-                )
+                await admin_send.reply(msg, title, rows=rows)
             except Exception:
                 log.exception("failed to send %s menu", token)
             return
@@ -886,7 +1239,7 @@ def register_admin_handlers(
             )
         except Exception as exc:  # never let an admin command crash the handler
             log.exception("admin command failed")
-            reply = f"❌ Error: {html.escape(str(exc))}"
+            reply = _err(t("err_command", lang), Para(esc(exc)))
 
         if answering_wizard or token == "/cancel":
             await _reply_for_wizard(msg, uid, reply, lang)
@@ -897,9 +1250,9 @@ def register_admin_handlers(
         if token == "/setlang":
             new_lang = admin_prefs.get_lang(uid) if uid is not None else lang
             try:
-                await msg.reply_text(
-                    _truncate(reply),
-                    parse_mode=enums.ParseMode.HTML,
+                await admin_send.reply(
+                    msg,
+                    reply,
                     reply_markup=admin_menu.to_reply_markup(
                         admin_menu.build_reply_keyboard(new_lang), new_lang
                     ),
@@ -910,9 +1263,7 @@ def register_admin_handlers(
                 await publish_commands_for(pyro, uid)
             return
         try:
-            await msg.reply_text(
-                _truncate(reply), parse_mode=enums.ParseMode.HTML
-            )
+            await admin_send.reply(msg, reply)
         except Exception:
             log.exception("failed to send admin reply")
 
