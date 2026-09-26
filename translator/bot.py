@@ -702,6 +702,7 @@ async def main_async():
     try:
         import pyrogram
 
+        from translator.services import rich_html
         from translator.services.admin_menu import capability_summary
 
         logger.info(
@@ -709,6 +710,14 @@ async def main_async():
             pyrogram.__version__,
             capability_summary(),
         )
+        # Старое имя флага ещё работает, но оператор должен увидеть, что его
+        # пора заменить на ADMIN_RICH_MESSAGES (rich теперь включён по умолчанию).
+        if os.getenv(rich_html.LEGACY_RICH_ENV, "").strip():
+            logger.warning(
+                "%s is deprecated; use %s (rich admin messages are now on by default)",
+                rich_html.LEGACY_RICH_ENV,
+                rich_html.RICH_ENV,
+            )
     except Exception:  # pragma: no cover - чисто диагностика, падать нельзя
         logger.warning("could not report kurigram capabilities", exc_info=True)
     # --- Single-instance guard ---

@@ -22,13 +22,29 @@ cycle (it imports the menu, which would otherwise import us at module load).
 
 from __future__ import annotations
 
-import html
 from typing import Dict
 
 from translator.services import admin_i18n
+from translator.services.rich_html import (
+    Bullets,
+    Doc,
+    Footer,
+    Heading,
+    Para,
+    RichText,
+    Status,
+    esc,
+)
 
 # uid -> {"step": "name"|"src"|"dst", "name": str, "src": str}
 _PENDING: Dict[int, dict] = {}
+
+# (step, label key, instruction key) in the order the wizard asks for them.
+_STEPS = (
+    ("name", "lbl_wiz_name", "txt_wiz_name"),
+    ("src", "lbl_wiz_src", "txt_wiz_src"),
+    ("dst", "lbl_wiz_dst", "txt_wiz_dst"),
+)
 
 
 def is_active(uid) -> bool:
@@ -66,39 +82,79 @@ def _is_int(text: str) -> bool:
         return False
 
 
-def feed(uid, text: str, lang: str = "en") -> str:
-    """Advance the wizard with the admin's latest message; return the reply HTML.
+def _step_doc(st: dict, lang: str) -> Doc:
+    """Heading with the step number, a ✅ / ▶️ / ▫️ progress list, the ask."""
+    t = admin_i18n.t
+    index = next(i for i, (step, _, _) in enumerate(_STEPS) if step == st["step"])
+    items = []
+    for i, (step, label_key, _) in enumerate(_STEPS):
+        label = t(label_key, lang)
+        if i < index:
+            items.append(f"✅ {label}: <code>{esc(st.get(step, ''))}</code>")
+        elif i == index:
+            items.append(f"▶️ <b>{label}</b>")
+        else:
+            items.append(f"▫️ {label}")
+    return Doc(
+        Heading(t("h_wizard", lang, step=index + 1)),
+        Bullets(items),
+        Para(t(_STEPS[index][2], lang)),
+        Footer(t("hint_wiz_cancel", lang)),
+    )
+
+
+def prompt(uid, lang: str = "en") -> RichText:
+    """The current step's prompt for ``uid`` (the first one right after start)."""
+    st = _PENDING.get(uid)
+    if st is None:
+        return cancelled(lang)
+    return _step_doc(st, lang).render()
+
+
+def cancelled(lang: str = "en") -> RichText:
+    t = admin_i18n.t
+    return Doc(Status(True, t("ok_cancelled", lang)), Para(t("txt_wiz_cancelled", lang))).render()
+
+
+def _retry(title_html: str, lang: str) -> RichText:
+    """A validation failure: the same field is asked again, nothing advances."""
+    return Doc(Status(False, title_html), Para(admin_i18n.t("txt_retry", lang))).render()
+
+
+def feed(uid, text: str, lang: str = "en") -> RichText:
+    """Advance the wizard with the admin's latest message; return the reply.
 
     On the final step this commits via ``_cmd_addchannel`` and clears the state.
     A validation failure re-prompts the *same* field without advancing.
     """
     from translator.services import admin_commands as ac  # lazy: avoid cycle
 
+    t = admin_i18n.t
     st = _PENDING.get(uid)
     if st is None:
-        return admin_i18n.t("wiz_cancelled", lang)
+        return cancelled(lang)
     text = (text or "").strip()
 
     if st["step"] == "name":
         name = text.lower()
         if not ac._NAME_RE.fullmatch(name):
-            return admin_i18n.t("wiz_bad_name", lang)
+            return _retry(t("err_wiz_name", lang), lang)
         if name in ac._logical_names():
-            return admin_i18n.t("wiz_dup_name", lang, name=html.escape(name))
+            return _retry(t("err_wiz_dup", lang, name=esc(name)), lang)
         st["name"] = name
         st["step"] = "src"
-        return admin_i18n.t("wiz_prompt_src", lang)
+        return _step_doc(st, lang).render()
 
     if st["step"] == "src":
         if not _is_int(text):
-            return admin_i18n.t("wiz_bad_int", lang)
+            return _retry(t("err_wiz_int", lang), lang)
         st["src"] = text
         st["step"] = "dst"
-        return admin_i18n.t("wiz_prompt_dst", lang)
+        return _step_doc(st, lang).render()
 
     # st["step"] == "dst"
     if not _is_int(text):
-        return admin_i18n.t("wiz_bad_int", lang)
+        return _retry(t("err_wiz_int", lang), lang)
     args = [st["name"], st["src"], text]
     cancel(uid)
     return ac._cmd_addchannel(args, lang)

@@ -121,7 +121,8 @@ directly. Other required vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID`,
 "protected" — the DM `/removechannel` refuses it because `TEST_CHANNEL` is
 required independently of `LOGICAL_CHANNELS`). Optional: `ADMIN_CHAT_ID` (admin
 Telegram user id(s), comma/semicolon-separated → `CONFIG.ADMIN_CHAT_IDS`; gates
-DM commands and receives error alerts). Admin app also
+DM commands and receives error alerts), `ADMIN_RICH_MESSAGES` (default on; `0`
+sends admin DMs and alerts as classic HTML — see the DM admin section). Admin app also
 reads `ADMIN_PASSWORD`, `SECRET_KEY`.
 
 > **`CHANNEL_CONFIGS` is captured by value** by `TelegramSender` at construction
@@ -231,11 +232,13 @@ receives DMs directly — no PTB polling is involved.
 - `services/admin_commands.py` registers one `filters.private & _admin_filter()`
   handler. The dispatch entry point `handle_command(msg, ...)` is deliberately
   free of Pyrogram plumbing so it's unit-testable with a fake message. Commands:
-  read-only `/help /status /stats /config /channels /prompt /logs`; writable
-  `/setmodel /settemp /setmaxtokens /seteffort /setloglevel /setprompt /setlang`;
+  read-only `/help /status /stats /channels /prompt /logs`; writable
+  `/setmodel /settemp /setmaxtokens /seteffort /setloglevel /setprompt /setlang
+  /setrich`;
   channel management `/addchannel /editchannel /removechannel`; admin management
-  `/admins /addadmin /removeadmin`; plus `/reload` and `/cancel`. Replies are
-  HTML-escaped and truncated under the 4096-char cap.
+  `/admins /addadmin /removeadmin`; plus `/reload`, `/cancel` and `/richcheck`.
+  Every reply is a rich message with a classic fallback (next section); data is
+  HTML-escaped, and each rendering is fitted to its own size cap.
 - **Buttons, not just commands** (`services/admin_menu.py`): a persistent reply
   keyboard whose taps arrive as *labels* (`resolve_button_label` maps them back
   to commands via `BUTTON_KEYS`, across every locale) plus an inline menu tree
@@ -266,33 +269,72 @@ receives DMs directly — no PTB polling is involved.
   `requirements.txt` (it ran the new menu code against 2.2.23, which has no
   `CopyTextButton`). `main_async` logs the version and the resolved flags at
   startup so the next skew is a line in `bot.log`, not a traceback DM'd mid-tap.
-- **Rich-message menus (Bot API 10.3 / Telegram 12.10), off by default.** Buttons
-  *inside* the message body rather than on the keyboard strip below it.
-  `rows_to_rich_html` appends a `<tg-button-row>` per row to the HTML title the
-  menu already builds — the rich dialect accepts the same inline tags, so titles
-  need no second rendering path. **Double-gated**: `HAS_RICH_MESSAGES` (which
-  requires the *edit* half, `rich_message=` on `edit_message_text` — the menu tree
-  navigates by editing one message in place) **and** the env flag
-  `ADMIN_RICH_MENUS`, read live so `/reload` picks it up.
+- **Every admin message is a rich message (Bot API 10.1–10.3), on by default,
+  with a classic fallback.** Headings, tables, lists, collapsible `<details>`,
+  footers and buttons *inside* the message body. Two facts shape all of it:
+  `InputRichMessage(html=…)` goes **straight to Telegram** (kurigram does no local
+  parsing), so the dialect is server-validated only and nothing in CI can prove a
+  payload is accepted; and how the dialect treats a bare `"\n"` is undocumented,
+  so layout never relies on newlines. Hence:
 
-  Two things to know before touching it. `InputRichMessage(html=…)` is passed
-  **straight to Telegram** — kurigram does no local parsing — so the dialect is
-  server-validated only and cannot be tested from CI; only
-  `type="callback_data"` is a confirmed spelling, which is why
-  `rows_to_rich_html` returns `None` for any menu containing a `copy:` or `x:`
-  button rather than guessing an attribute (all-or-nothing per menu, so an
-  unsupported button can't silently vanish from a row). And the rich send needs
-  its **own callable** (`send_rich`), not another kwarg: `Message.reply_text`
-  does not accept `rich_message` — only `reply_rich` and the edit methods do.
-- **`send_with_markup` degrades the markup, never the message**: rich (when
-  enabled and expressible) → full chrome → plain callback buttons → **no markup
-  at all**. Markup is built outside the send
-  so a construction failure is logged separately from a Telegram rejection, and
-  `MessageNotModified` is re-raised untouched from any tier. A disabled button
-  degrades to the ordinary button it wraps (`x:` carries the action), copy
-  buttons drop out, and an emptied row is skipped — so degrading never makes an
-  action unreachable. "The operator saw nothing" was the real symptom; the last
-  tier exists to make that impossible.
+  - **Author once, render twice** (`services/rich_html.py`, stdlib-only). A screen
+    is a `Doc` of blocks (`Heading Para KV Setting Table Bullets Quote RawQuote Pre
+    Details Hr Footer Status Note`), each rendering itself as rich HTML (≤ 32000
+    UTF-8 bytes) *and* classic Telegram HTML (≤ 4000 chars) in the layout
+    operators already knew (`label: value`, `KEY = value`, `✅ …` first).
+    `Doc.render()` returns a **`RichText`**: a `str` whose value is the classic
+    rendering (so `startswith("✅")` and every substring test run against exactly
+    what the fallback sends) carrying `.rich` and `.status`. **`rt + "x"` returns a
+    plain `str` and drops `.rich`** — compose with `Doc.add` / `admin_commands.compose`.
+    Block constructors take trusted inline HTML (escape data with `esc`); `Pre` /
+    `RawQuote` take raw text, escape it, and are the "elastic" blocks that absorb
+    truncation (logs and tracebacks keep their tail, the prompt its head), so
+    headings, footers and closing tags survive a cut.
+  - **One send path** (`services/admin_send.py`): `reply(msg, content, rows=… |
+    reply_markup=…)` and `edit(cq, content, rows=…)`. A guard test fails on any
+    direct `reply_text` / `edit_message_text` in `admin_commands` / `admin_menu` /
+    `admin_wizard`. Reply keyboards can't live in the body, so they ride along
+    with `reply_rich(…, reply_markup=kb)`.
+  - **`send_with_markup` degrades markup and format, never the message**: rich +
+    in-body `<tg-button-row>` → rich + ordinary inline keyboard → classic styled →
+    classic plain → classic with **no markup at all**. Markup is built outside the
+    send so a construction failure is logged apart from a Telegram rejection, and
+    `MessageNotModified` is re-raised untouched from any tier. In the rich body
+    every button kind has a spelling (`type="copy_text" text=…`,
+    `type="disabled"`, `style="danger"`); `rich_button_rows` returns `None` only
+    past the API limits (callback data > 64 bytes, copy text > 256, > 8 per row),
+    which skips just the in-body tier. On the classic tiers a disabled button
+    degrades to the ordinary button it wraps (`x:` carries the action), copy
+    buttons drop out, and an emptied row is skipped — so degrading never makes an
+    action unreachable.
+  - **The rich edit must omit `text`.** kurigram's `edit_message_text` checks
+    `text` first and silently ignores `rich_message` when both are given — the
+    menus-only version passed both, so its "rich" edits were quietly classic.
+    If every edit tier fails, `admin_send.edit` sends the screen as a new message.
+  - **Rich needs its own callable**, not another kwarg: `Message.reply_text` does
+    not accept `rich_message` — only `reply_rich` and the edit methods do.
+    `HAS_RICH_MESSAGES` probes the send half with `reply_markup` (kurigram
+    2.2.25+), the edit half, and `RichMessageButton` (2.2.26).
+  - **Kill switch & breaker.** `rich_enabled()` = capability **and**
+    `ADMIN_RICH_MESSAGES` (default on; the old `ADMIN_RICH_MENUS` is a deprecated
+    alias — an explicit `=0` there still opts out, the new name wins, startup
+    warns) **and** a closed circuit breaker (3 consecutive rich rejections → rich
+    skipped for 15 min; any success resets). `/setrich on|off` (or ✨ in Settings)
+    persists the switch live. `load_dotenv` runs only at import, so `/reload`
+    does **not** re-read `.env` in general — `_cmd_reload` copies just the two
+    rich keys from it, so an out-of-band edit of the kill switch still lands.
+  - **`/richcheck`** sends every `rich_html.PROBES` document to the chat, deletes
+    it, and replies with a ✅/❌ table of Telegram's verdicts — the only real test
+    of the dialect. `test_every_emitted_tag_has_a_probe` fails if a block starts
+    emitting a tag or attribute no probe covers.
+  - **Fallback logs are WARNING, never ERROR**: ERROR records are DM'd by the log
+    forwarder, and a handled degradation must not page the operator.
+  - **i18n strings are fragments** (`h_* lbl_* col_* txt_* hint_* ok_* err_*
+    val_*`), never layouts, and never contain `"\n"` (tested). Outcome icons come
+    from the `Status` block. `test_every_key_used_in_the_code_exists_in_english`
+    catches typo'd keys, which `t()` would otherwise render as the raw key.
+  - Tests: `translator/tests/conftest.py` neutralises both rich env keys (the real
+    `.env` is loaded by config import) and resets the breaker for every test.
 - **Preset lists track `config.py`, not the docs.** `MODEL_PRESETS` /
   `TOKEN_PRESETS` / `EFFORT_PRESETS` went stale once (the menu still said
   "Haiku 4.5 (default)" after the default became Sonnet 5), so which preset is
@@ -340,8 +382,14 @@ receives DMs directly — no PTB polling is involved.
   wizard's next answer.
 - **Error forwarding:** `services/error_sender.send_alert` (httpx → Bot API,
   throttled ~300s per signature `key`) now reads `ADMIN_ALERT_CHAT_ID` **or**
-  falls back to `ADMIN_CHAT_ID` — previously it was a silent no-op since `.env`
-  only defines the latter. `services/log_forwarding.py` additionally attaches a
+  falls back to `ADMIN_CHAT_ID` (the first id, when it lists several) —
+  previously it was a silent no-op since `.env` only defines the latter. Alerts
+  go out via **`sendRichMessage`** (`build_alert_html`: first line → heading,
+  `Key: value` lines → table, the rest — a traceback — → expandable quote keeping
+  its tail), falling back to the plain `sendMessage` on any non-200 or error;
+  `ADMIN_RICH_MESSAGES=0` skips rich. The signature stays `(text, key=None)`: the
+  callers already write that shape, and `TelegramErrorHandler.emit` builds the
+  coroutine synchronously, where a new kwarg would fail silently. `services/log_forwarding.py` additionally attaches a
   root-logger `TelegramErrorHandler` (wired in `main_async` once the loop exists)
   that bridges sync `emit` → async `send_alert` via `run_coroutine_threadsafe`,
   so **any** ERROR-level log is DM'd. Recursion/flood guards: it skips the
